@@ -63,6 +63,24 @@ Inside tmux, kitty graphics can't be placed inline without desyncing the grid, s
 deletes its graphic on exit — including on Ctrl-C — so nothing is ever left
 overlaying your session. If one ever is, `pastels clear` nukes it.
 
+## over SSH + tmux (the main use case)
+
+`pastels show N` paints the image on your **local** terminal even though it runs
+on the remote box — the kitty escape sequences travel back over the SSH PTY, and
+`pastels` wraps them in tmux's passthrough envelope and enables passthrough for
+you. Inside tmux, `TERM` becomes `tmux-256color` and your terminal's identity
+isn't forwarded, so `pastels` actively probes the terminal to confirm graphics
+support rather than guessing from environment variables.
+
+If `show N` prints a path instead of rendering, the probe couldn't confirm
+support (flaky/slow SSH, an unusual terminal). Force it:
+
+```sh
+PASTELS_FORCE_GRAPHICS=1 pastels show N     # you know your terminal speaks kitty graphics
+PASTELS_PLAIN_CLEAR=1 pastels show N        # if alt-screen misbehaves under tmux
+PASTELS_NO_GRAPHICS=1 pastels show N        # force the text+path fallback
+```
+
 ## can it be automatic, like cmd+click?
 
 Short version: not fully — Claude Code owns the `[Image #N]` rendering and a hook
