@@ -1,0 +1,45 @@
+{
+  "name": "pastels",
+  "version": "0.0.1",
+  "description": "see what you pasted — image recall for agentic CLI sessions over SSH",
+  "bin": {
+    "pastels": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dlinardi/pastels.git"
+  },
+  "keywords": [
+    "cli",
+    "terminal",
+    "images",
+    "kitty-graphics",
+    "claude-code",
+    "ssh",
+    "tmux"
+  ],
+  "author": "dave <dlinardi98@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/dlinardi/pastels/issues"
+  },
+  "homepage": "https://github.com/dlinardi/pastels#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

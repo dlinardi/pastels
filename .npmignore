@@ -1,0 +1,7 @@
+src/
+test/
+docs/
+.gitignore
+tsconfig.json
+vitest.config.ts
+CLAUDE.md
