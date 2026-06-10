@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { CapturedImage } from "../adapters/types";
-import { pngDimensions } from "./png";
+import { extForMedia, imageDimensions } from "./png";
 
 // Content-addressed image store under ~/.pastels/ (PRD §5.3):
 //   images/<sha256-12>.png   content-addressed, dedupe-free
@@ -97,7 +97,7 @@ export function ingest(images: CapturedImage[], source: string): StoredImage[] {
 
   for (const img of images) {
     const hash = hashOf(img.bytes);
-    const file = path.join(imagesDir(), `${hash}.png`);
+    const file = path.join(imagesDir(), `${hash}${extForMedia(img.mediaType)}`);
     if (fs.existsSync(file)) {
       try {
         const now = new Date();
@@ -109,7 +109,7 @@ export function ingest(images: CapturedImage[], source: string): StoredImage[] {
       fs.writeFileSync(file, img.bytes);
     }
 
-    const dims = pngDimensions(img.bytes);
+    const dims = imageDimensions(img.bytes);
     const ts = img.ts ?? new Date().toISOString();
     const rec: IndexRecord = {
       ts,
@@ -169,13 +169,15 @@ export function gc(days = 7): { filesDeleted: number; entriesPruned: number } {
     return { filesDeleted: 0, entriesPruned: 0 };
   }
 
+  const survivors = new Set<string>();
   for (const f of files) {
-    if (!f.endsWith(".png")) continue;
     const fp = path.join(dir, f);
     try {
       if (fs.statSync(fp).mtimeMs < cutoff) {
         fs.rmSync(fp);
         filesDeleted++;
+      } else {
+        survivors.add(f.split(".")[0]!); // hash = basename before extension
       }
     } catch {
       // ignore
@@ -183,9 +185,7 @@ export function gc(days = 7): { filesDeleted: number; entriesPruned: number } {
   }
 
   const records = readIndex();
-  const alive = records.filter((r) =>
-    fs.existsSync(path.join(dir, `${r.hash}.png`))
-  );
+  const alive = records.filter((r) => survivors.has(r.hash));
   const entriesPruned = records.length - alive.length;
   if (entriesPruned > 0 || filesDeleted > 0) writeIndex(alive);
 

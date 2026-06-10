@@ -20,3 +20,64 @@ export function pngDimensions(
   if (width === 0 || height === 0) return null;
   return { width, height };
 }
+
+// JPEG dimensions live in the SOF (Start Of Frame) marker. Scan the marker
+// segments until we hit one — no decoding, no dependency.
+export function jpegDimensions(
+  buf: Buffer
+): { width: number; height: number } | null {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let off = 2;
+  while (off + 9 < buf.length) {
+    if (buf[off] !== 0xff) {
+      off++; // resync on padding
+      continue;
+    }
+    const marker = buf[off + 1]!;
+    // standalone markers carry no length payload
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      off += 2;
+      continue;
+    }
+    const len = buf.readUInt16BE(off + 2);
+    // SOF0..SOF15, excluding DHT(C4), JPG(C8), DAC(CC)
+    if (
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc
+    ) {
+      const height = buf.readUInt16BE(off + 5);
+      const width = buf.readUInt16BE(off + 7);
+      if (width === 0 || height === 0) return null;
+      return { width, height };
+    }
+    off += 2 + len;
+  }
+  return null;
+}
+
+/** Read dimensions for any image we can read header-only: PNG or JPEG. */
+export function imageDimensions(
+  buf: Buffer
+): { width: number; height: number } | null {
+  return pngDimensions(buf) ?? jpegDimensions(buf);
+}
+
+const EXT_BY_MEDIA: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+};
+
+/** File extension for a media type; `.bin` for anything unrecognised. */
+export function extForMedia(mediaType: string): string {
+  return EXT_BY_MEDIA[mediaType] ?? ".bin";
+}
+
+/** Can the kitty renderer paint this directly? Only PNG (f=100), no decoder. */
+export function isRenderable(mediaType: string): boolean {
+  return mediaType === "image/png";
+}
