@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { ClaudeCodeTranscriptAdapter, slugForCwd } from "./adapters/claude-code";
 import type { CaptureAdapter, Session } from "./adapters/types";
+import { isRenderable } from "./core/png";
 import { gc, ingest, type StoredImage } from "./core/store";
 import { detectCaps } from "./render/capability";
 import { printGallery } from "./render/gallery";
@@ -12,6 +13,7 @@ const USAGE = `pastels — see what you pasted
 
 usage:
   pastels                text gallery of images in the current session
+  pastels -a             every image in this project, grouped by session
   pastels show N         full-screen render of [Image #N] (works in tmux)
   pastels -s             pick a session, then show its gallery
   pastels path N         print the stored file path for [Image #N]
@@ -103,28 +105,89 @@ function readLine(): Promise<string> {
   });
 }
 
+const PROJECT_SCAN_CAP = 25;
+
+/** Scan the current project: pick the most-recent session with images as active,
+ * and count how many of the project's sessions have images (for the browse hint).
+ * Falls back to the most-recent session anywhere when the cwd isn't a known project. */
+function projectScan(
+  a: CaptureAdapter
+): { active: Session; images: StoredImage[]; withImages: number; inProject: boolean } | null {
+  const slug = slugForCwd(process.cwd());
+  const all = a.listSessions();
+  const proj = all.filter((s) => s.project === slug);
+
+  if (proj.length) {
+    let active: Session | undefined;
+    let images: StoredImage[] = [];
+    let withImages = 0;
+    for (const s of proj.slice(0, PROJECT_SCAN_CAP)) {
+      const imgs = loadImages(s, a);
+      if (imgs.length) {
+        withImages++;
+        if (!active) {
+          active = s;
+          images = imgs;
+        }
+      }
+    }
+    if (active) return { active, images, withImages, inProject: true };
+    return null;
+  }
+
+  for (const s of all) {
+    const imgs = loadImages(s, a);
+    if (imgs.length) return { active: s, images: imgs, withImages: 1, inProject: false };
+  }
+  return null;
+}
+
 async function cmdGallery(session?: Session): Promise<void> {
   const a = adapter();
   const caps = detectCaps();
 
-  let images: StoredImage[];
-  let active: Session | undefined;
   if (session) {
-    active = session;
-    images = loadImages(session, a);
-  } else {
-    const picked = defaultSession(a);
-    if (!picked) {
-      console.log("no images found. paste an image into a Claude Code session, then try again.");
-      return;
-    }
-    active = picked.session;
-    images = picked.images;
+    printGallery(loadImages(session, a), caps, session);
+    gc(7);
+    return;
   }
 
-  printGallery(images, caps, active);
+  const r = projectScan(a);
+  if (!r) {
+    console.log("no images found. paste an image into a Claude Code session, then try again.");
+    return;
+  }
+
+  printGallery(r.images, caps, r.active);
+  if (r.inProject && r.withImages > 1) {
+    const others = r.withImages - 1;
+    process.stdout.write(
+      `\n  ${others} other session${others === 1 ? "" : "s"} in this project ${
+        others === 1 ? "has" : "have"
+      } images — \`pastels -s\` to browse one, \`pastels -a\` for all.\n`
+    );
+  }
   // opportunistic, silent housekeeping (PRD §5.3) — by file mtime, never the
   // image you just viewed.
+  gc(7);
+}
+
+/** `pastels -a` — every image in the current project, grouped by session. */
+function cmdAll(): void {
+  const a = adapter();
+  const caps = detectCaps();
+  const slug = slugForCwd(process.cwd());
+  const proj = a.listSessions().filter((s) => s.project === slug);
+
+  let any = false;
+  for (const s of proj) {
+    const imgs = loadImages(s, a);
+    if (!imgs.length) continue;
+    if (any) process.stdout.write("\n");
+    printGallery(imgs, caps, s);
+    any = true;
+  }
+  if (!any) console.log("no images found in this project.");
   gc(7);
 }
 
@@ -150,8 +213,12 @@ async function cmdShow(arg: string | undefined, session?: Session): Promise<void
     return;
   }
 
-  if (!caps.graphics || !caps.isTTY) {
-    // graphics unsupported — degrade to a text line + path (PRD §5.4 item 4)
+  // graphics unsupported, or a format kitty can't paint (only PNG, no decoder):
+  // degrade to a text line + path (PRD §5.4 item 4) rather than emit broken escapes.
+  if (!caps.graphics || !caps.isTTY || !isRenderable(img.mediaType)) {
+    if (caps.graphics && caps.isTTY && !isRenderable(img.mediaType)) {
+      console.log(`[Image #${img.label}] is ${img.mediaType} — v0 renders PNG only.`);
+    }
     console.log(
       `[Image #${img.label}]  ${humanDims(img.width, img.height)}  ${humanSize(img.bytes)}`
     );
@@ -224,6 +291,11 @@ async function main(): Promise<void> {
   switch (cmd) {
     case undefined:
       await cmdGallery(session);
+      break;
+    case "-a":
+    case "--all":
+    case "all":
+      cmdAll();
       break;
     case "show":
       await cmdShow(argv[1], session);

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { Session } from "../adapters/types";
 import type { StoredImage } from "../core/store";
+import { isRenderable } from "../core/png";
 import { humanAge, humanDims, humanSize } from "../util/format";
 import type { Caps } from "./capability";
 import { buildImageSequences, imageIdFromHash, wrap } from "./kitty";
@@ -85,6 +86,11 @@ export function printGallery(
         img.ts
       )}\n`
     );
+    if (!isRenderable(img.mediaType)) {
+      // kitty paints PNG only; don't emit broken escapes for jpeg/etc.
+      out.write(`  (${img.mediaType} — \`pastels path ${img.label}\`)\n\n`);
+      continue;
+    }
     try {
       const bytes = fs.readFileSync(img.file);
       const id = imageIdFromHash(img.hash);
