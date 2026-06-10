@@ -35,12 +35,18 @@ Full surface:
 
 ```
 pastels                  text gallery of the current session
+pastels -a               every image in this project, grouped by session
 pastels show N           full-pane render of [Image #N] (alt-screen, any-key to return)
-pastels -s               pick a session, then show its gallery
+pastels N                shorthand for `pastels show N`
+pastels -s               pick a session → gallery → render one (works in tmux)
+pastels -s N             pick a session, then render [Image #N] from it
 pastels path N           print the stored file path for [Image #N]
 pastels gc [--days 7]    prune images not seen in N days
 pastels clear            panic: delete any stranded terminal graphics
 ```
+
+`[Image #N]` labels are **per-session** counters, so the bare gallery shows one
+session at a time; use `-a` to sweep the whole project or `-s` to pick a session.
 
 ## how it works
 
@@ -56,6 +62,13 @@ Inside tmux, kitty graphics can't be placed inline without desyncing the grid, s
 `show N` takeover (which restores your scrollback on exit). `show N` always
 deletes its graphic on exit — including on Ctrl-C — so nothing is ever left
 overlaying your session. If one ever is, `pastels clear` nukes it.
+
+## can it be automatic, like cmd+click?
+
+Short version: not fully — Claude Code owns the `[Image #N]` rendering and a hook
+can't paint to your screen. But you can get *semi*-automatic recall (a hook that
+shows new pastes in a side tmux pane, or logs their paths). See
+[docs/automation.md](docs/automation.md). It's deliberately out of v0.
 
 ## works great with [cc-clip](https://github.com/) <!-- link -->
 
