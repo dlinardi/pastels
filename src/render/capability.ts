@@ -1,5 +1,16 @@
+import { execFileSync } from "node:child_process";
+import { tmuxWrap } from "./kitty";
+
 // Terminal capability detection (PRD §5.4 item 4). Never emit raw graphics
 // escapes at a terminal that can't render them — fall back to the text table.
+//
+// The hard case is the product's whole reason for existing: SSH + tmux. There,
+// TERM becomes tmux-256color and the outer terminal's env vars (KITTY_WINDOW_ID,
+// GHOSTTY_RESOURCES_DIR, TERM_PROGRAM) are NOT forwarded — so an env heuristic
+// alone wrongly concludes "no graphics" and disables the hero command. So we
+// also actively probe: send a kitty graphics *query* (a=q, renders nothing) plus
+// a primary-device-attributes request as a sentinel, and see if the terminal
+// answers the graphics query. This works through tmux once passthrough is on.
 
 export interface Caps {
   /** running inside tmux ($TMUX set) — graphics must be envelope-wrapped */
@@ -10,20 +21,106 @@ export interface Caps {
   isTTY: boolean;
 }
 
-export function detectCaps(): Caps {
-  const inTmux = !!process.env.TMUX;
-  const isTTY = !!process.stdout.isTTY;
-
-  // Heuristic: kitty graphics is supported by kitty, ghostty, wezterm, konsole.
-  // A query/response probe is more precise but risky over flaky SSH/tmux; the
-  // text table is always a safe fallback, so a conservative env heuristic is fine.
+/** Fast, side-effect-free guess from environment variables. */
+export function envGraphicsHeuristic(): boolean {
   const term = process.env.TERM ?? "";
   const termProgram = process.env.TERM_PROGRAM ?? "";
-  const graphics =
+  return (
     !!process.env.KITTY_WINDOW_ID ||
     !!process.env.GHOSTTY_RESOURCES_DIR ||
     /kitty|ghostty/i.test(term) ||
-    /ghostty|kitty|wezterm/i.test(termProgram);
+    /ghostty|kitty|wezterm/i.test(termProgram)
+  );
+}
 
-  return { inTmux, graphics, isTTY };
+/** Ask tmux to allow graphics passthrough (PRD §5.4: "check/set allow-passthrough"). */
+export function enableTmuxPassthrough(): void {
+  try {
+    execFileSync("tmux", ["set", "-gq", "allow-passthrough", "on"], {
+      stdio: "ignore",
+      timeout: 1000,
+    });
+  } catch {
+    // tmux missing or older — passthrough may already be on, or graphics won't work
+  }
+}
+
+/**
+ * Actively probe for kitty graphics support. Sends a graphics query (which paints
+ * nothing) followed by a DA1 request as a sentinel, then reads the reply. A
+ * graphics-capable terminal answers the query with `\x1b_Gi=31;OK`; everything
+ * answers DA1, so DA1 arriving without a graphics reply means "unsupported".
+ */
+export function probeKittyGraphics(inTmux: boolean, timeoutMs = 400): Promise<boolean> {
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  if (!stdin.isTTY || !stdout.isTTY) return Promise.resolve(false);
+
+  // 1x1 RGB pixel, transmitted directly (f=24), query action (a=q) renders nothing
+  const pixel = Buffer.from([0, 0, 0]).toString("base64");
+  let query = `\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;${pixel}\x1b\\`;
+  if (inTmux) query = tmuxWrap(query);
+  const da1 = "\x1b[c";
+
+  return new Promise<boolean>((resolve) => {
+    let buf = "";
+    let done = false;
+    const prevRaw = stdin.isRaw;
+
+    const finish = (val: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      stdin.off("data", onData);
+      try {
+        stdin.setRawMode(prevRaw);
+      } catch {
+        // ignore
+      }
+      stdin.pause();
+      resolve(val);
+    };
+
+    const onData = (d: Buffer): void => {
+      buf += d.toString("latin1");
+      if (buf.includes("\x1b_Gi=31")) return finish(true); // graphics OK reply
+      if (/\x1b\[\?[0-9;]*c/.test(buf)) return finish(buf.includes("_Gi=31")); // DA1 sentinel
+    };
+
+    try {
+      stdin.setRawMode(true);
+    } catch {
+      // ignore
+    }
+    stdin.resume();
+    stdin.on("data", onData);
+    stdout.write(query + da1);
+    const timer = setTimeout(() => finish(buf.includes("_Gi=31")), timeoutMs);
+  });
+}
+
+export interface DetectOptions {
+  /** actively probe the terminal when the env heuristic is inconclusive */
+  probe?: boolean;
+}
+
+/**
+ * Detect capabilities. Overrides: PASTELS_NO_GRAPHICS=1 forces text-only,
+ * PASTELS_FORCE_GRAPHICS=1 forces graphics on (the guaranteed escape hatch when
+ * a terminal supports kitty graphics but detection can't prove it).
+ */
+export async function detectCaps(opts: DetectOptions = {}): Promise<Caps> {
+  const inTmux = !!process.env.TMUX;
+  const isTTY = !!process.stdout.isTTY;
+
+  if (process.env.PASTELS_NO_GRAPHICS === "1") return { inTmux, isTTY, graphics: false };
+  if (process.env.PASTELS_FORCE_GRAPHICS === "1") return { inTmux, isTTY, graphics: true };
+
+  if (envGraphicsHeuristic()) return { inTmux, isTTY, graphics: true };
+
+  if (!opts.probe || !isTTY) return { inTmux, isTTY, graphics: false };
+
+  if (inTmux) enableTmuxPassthrough();
+  const graphics = await probeKittyGraphics(inTmux);
+  return { inTmux, isTTY, graphics };
 }

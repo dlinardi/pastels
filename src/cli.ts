@@ -145,7 +145,7 @@ function projectScan(
 
 async function cmdGallery(): Promise<void> {
   const a = adapter();
-  const caps = detectCaps();
+  const caps = await detectCaps();
 
   const r = projectScan(a);
   if (!r) {
@@ -168,9 +168,9 @@ async function cmdGallery(): Promise<void> {
 }
 
 /** `pastels -a` — every image in the current project, grouped by session. */
-function cmdAll(): void {
+async function cmdAll(): Promise<void> {
   const a = adapter();
-  const caps = detectCaps();
+  const caps = await detectCaps();
   const slug = slugForCwd(process.cwd());
   const proj = a.listSessions().filter((s) => s.project === slug);
 
@@ -222,7 +222,7 @@ async function cmdShow(arg: string | undefined, session?: Session): Promise<void
     return;
   }
   const a = adapter();
-  const caps = detectCaps();
+  const caps = await detectCaps({ probe: true });
   const ctx = session ? { session, images: loadImages(session, a) } : defaultSession(a);
   if (!ctx) {
     console.error("no images found.");
@@ -237,7 +237,7 @@ async function cmdShow(arg: string | undefined, session?: Session): Promise<void
  * flow. (`pastels -s show N` / `pastels -s N` skip the prompt and go direct.) */
 async function cmdBrowse(session: Session): Promise<void> {
   const a = adapter();
-  const caps = detectCaps();
+  const caps = await detectCaps({ probe: true });
   const images = loadImages(session, a);
   printGallery(images, caps, session);
   gc(7);
@@ -290,8 +290,8 @@ function cmdGc(args: string[]): void {
   );
 }
 
-function cmdClear(): void {
-  const caps = detectCaps();
+async function cmdClear(): Promise<void> {
+  const caps = await detectCaps();
   // panic delete-all, tmux-wrapped if needed, then restore the cursor.
   process.stdout.write(wrap(deleteAllSeq(), caps.inTmux));
   process.stdout.write("\x1b[?25h");
@@ -325,7 +325,7 @@ async function main(): Promise<void> {
     case "-a":
     case "--all":
     case "all":
-      cmdAll();
+      await cmdAll();
       break;
     case "show":
       await cmdShow(argv[1], session);
@@ -337,7 +337,7 @@ async function main(): Promise<void> {
       cmdGc(argv.slice(1));
       break;
     case "clear":
-      cmdClear();
+      await cmdClear();
       break;
     case "-h":
     case "--help":

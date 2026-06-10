@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type { StoredImage } from "../core/store";
 import { humanDims } from "../util/format";
-import type { Caps } from "./capability";
+import { type Caps, enableTmuxPassthrough } from "./capability";
 import {
   buildImageSequences,
   deleteByIdSeq,
@@ -39,6 +39,10 @@ export async function show(
 ): Promise<void> {
   const usePlain = opts.plain || process.env.PASTELS_PLAIN_CLEAR === "1";
   const id = imageIdFromHash(img.hash);
+
+  // graphics through tmux require passthrough; guarantee it before we emit any,
+  // regardless of how capability detection resolved (e.g. PASTELS_FORCE_GRAPHICS).
+  if (caps.inTmux) enableTmuxPassthrough();
 
   let torn = false;
   const teardown = (): void => {
