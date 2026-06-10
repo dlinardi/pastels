@@ -3,7 +3,7 @@ import { ClaudeCodeTranscriptAdapter, slugForCwd } from "./adapters/claude-code"
 import type { CaptureAdapter, Session } from "./adapters/types";
 import { isRenderable } from "./core/png";
 import { gc, ingest, type StoredImage } from "./core/store";
-import { detectCaps } from "./render/capability";
+import { type Caps, detectCaps } from "./render/capability";
 import { printGallery } from "./render/gallery";
 import { deleteAllSeq, wrap } from "./render/kitty";
 import { show } from "./render/show";
@@ -14,8 +14,9 @@ const USAGE = `pastels — see what you pasted
 usage:
   pastels                text gallery of images in the current session
   pastels -a             every image in this project, grouped by session
-  pastels show N         full-screen render of [Image #N] (works in tmux)
-  pastels -s             pick a session, then show its gallery
+  pastels show N         full-screen render of [Image #N] (alias: pastels N)
+  pastels -s             pick a session → gallery → render one (works in tmux)
+  pastels -s N           pick a session, then render [Image #N] from it
   pastels path N         print the stored file path for [Image #N]
   pastels gc [--days 7]  prune images not seen in N days
   pastels clear          panic: delete any stranded terminal graphics
@@ -142,15 +143,9 @@ function projectScan(
   return null;
 }
 
-async function cmdGallery(session?: Session): Promise<void> {
+async function cmdGallery(): Promise<void> {
   const a = adapter();
   const caps = detectCaps();
-
-  if (session) {
-    printGallery(loadImages(session, a), caps, session);
-    gc(7);
-    return;
-  }
 
   const r = projectScan(a);
   if (!r) {
@@ -191,6 +186,34 @@ function cmdAll(): void {
   gc(7);
 }
 
+/** Render [Image #n] from an already-loaded set. Degrades to a path for
+ * non-graphics terminals or non-PNG formats. Returns false if no such image. */
+async function renderImage(
+  images: StoredImage[],
+  n: number,
+  caps: Caps
+): Promise<boolean> {
+  const img = findImage(images, n);
+  if (!img) {
+    console.error(`no [Image #${n}] in this session.`);
+    return false;
+  }
+  // graphics unsupported, or a format kitty can't paint (only PNG, no decoder):
+  // degrade to a text line + path (PRD §5.4 item 4) rather than emit broken escapes.
+  if (!caps.graphics || !caps.isTTY || !isRenderable(img.mediaType)) {
+    if (caps.graphics && caps.isTTY && !isRenderable(img.mediaType)) {
+      console.log(`[Image #${img.label}] is ${img.mediaType} — v0 renders PNG only.`);
+    }
+    console.log(
+      `[Image #${img.label}]  ${humanDims(img.width, img.height)}  ${humanSize(img.bytes)}`
+    );
+    console.log(img.file);
+    return true;
+  }
+  await show(img, caps);
+  return true;
+}
+
 async function cmdShow(arg: string | undefined, session?: Session): Promise<void> {
   const n = Number(arg);
   if (!arg || !Number.isInteger(n)) {
@@ -206,26 +229,29 @@ async function cmdShow(arg: string | undefined, session?: Session): Promise<void
     process.exitCode = 1;
     return;
   }
-  const img = findImage(ctx.images, n);
-  if (!img) {
-    console.error(`no [Image #${n}] in this session.`);
-    process.exitCode = 1;
-    return;
-  }
+  if (!(await renderImage(ctx.images, n, caps))) process.exitCode = 1;
+}
 
-  // graphics unsupported, or a format kitty can't paint (only PNG, no decoder):
-  // degrade to a text line + path (PRD §5.4 item 4) rather than emit broken escapes.
-  if (!caps.graphics || !caps.isTTY || !isRenderable(img.mediaType)) {
-    if (caps.graphics && caps.isTTY && !isRenderable(img.mediaType)) {
-      console.log(`[Image #${img.label}] is ${img.mediaType} — v0 renders PNG only.`);
-    }
-    console.log(
-      `[Image #${img.label}]  ${humanDims(img.width, img.height)}  ${humanSize(img.bytes)}`
-    );
-    console.log(img.file);
+/** `pastels -s` with no follow-up command: pick a session, show its gallery,
+ * then prompt for an [Image #N] to render full-screen — the "browse then view"
+ * flow. (`pastels -s show N` / `pastels -s N` skip the prompt and go direct.) */
+async function cmdBrowse(session: Session): Promise<void> {
+  const a = adapter();
+  const caps = detectCaps();
+  const images = loadImages(session, a);
+  printGallery(images, caps, session);
+  gc(7);
+
+  if (!images.length || !process.stdin.isTTY) return;
+  process.stdout.write("\nrender which? enter a number (or press enter to exit): ");
+  const ans = (await readLine()).trim();
+  if (!ans) return;
+  const n = Number(ans);
+  if (!Number.isInteger(n)) {
+    console.error("not a number.");
     return;
   }
-  await show(img, caps);
+  await renderImage(images, n, caps);
 }
 
 async function cmdPath(arg: string | undefined, session?: Session): Promise<void> {
@@ -277,6 +303,7 @@ async function main(): Promise<void> {
 
   // a leading -s / --session selects a session, then the remaining args run as usual
   let session: Session | undefined;
+  let pickedViaFlag = false;
   if (argv[0] === "-s" || argv[0] === "--session") {
     argv.shift();
     const picked = await pickSession(adapter());
@@ -285,12 +312,15 @@ async function main(): Promise<void> {
       return;
     }
     session = picked;
+    pickedViaFlag = true;
   }
 
   const cmd = argv[0];
   switch (cmd) {
     case undefined:
-      await cmdGallery(session);
+      // `pastels -s` → browse + prompt; bare `pastels` → default-session gallery
+      if (pickedViaFlag && session) await cmdBrowse(session);
+      else await cmdGallery();
       break;
     case "-a":
     case "--all":
@@ -319,6 +349,11 @@ async function main(): Promise<void> {
       console.log(VERSION);
       break;
     default:
+      // bare `pastels N` is shorthand for `pastels show N`
+      if (/^\d+$/.test(cmd)) {
+        await cmdShow(cmd, session);
+        break;
+      }
       console.error(`unknown command: ${cmd}\n`);
       process.stdout.write(USAGE);
       process.exitCode = 1;
