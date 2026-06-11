@@ -1,5 +1,9 @@
+import fs from "node:fs";
 import type { Session, SessionInfo } from "../adapters/types";
-import { humanAge, style, truncate } from "../util/format";
+import { isRenderable } from "../core/png";
+import type { StoredImage } from "../core/store";
+import { copyToClipboard } from "../util/clipboard";
+import { humanAge, humanDims, humanSize, style, truncate } from "../util/format";
 import { type Caps, enableTmuxPassthrough } from "./capability";
 import { buildImageSequences, deleteByIdSeq, wrap } from "./kitty";
 
@@ -132,6 +136,9 @@ export function interactivePick(
           (query ? style.bold(query) : style.dim("(all)")) +
           style.dim(`   ${filtered.length}/${rows.length}`)
       );
+      if (!graphics && opts.caps?.isTTY) {
+        lines.push(style.dim("preview off · PASTELS_FORCE_GRAPHICS=1 to force"));
+      }
 
       stdout.write("\x1b[H\x1b[2J" + lines.join("\r\n"));
     };
@@ -226,5 +233,165 @@ export function interactivePick(
     stdin.on("data", onData);
     renderText();
     renderPreview(); // first preview immediately
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Interactive IMAGE picker: navigate a session's images with a live preview,
+// Enter to view full-screen, c to copy the path. Same teardown discipline.
+// ---------------------------------------------------------------------------
+
+export function interactiveImagePick(
+  images: StoredImage[],
+  opts: { caps?: Caps } = {}
+): Promise<StoredImage | null> {
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  const cols = stdout.columns ?? 100;
+  const rowsTotal = stdout.rows ?? 24;
+  const graphics = !!(opts.caps?.graphics && opts.caps?.isTTY);
+  const inTmux = !!opts.caps?.inTmux;
+  const previewCol = graphics ? Math.max(40, Math.floor(cols * 0.45)) : 0;
+  const previewRows = Math.min(Math.max(6, rowsTotal - 5), 22);
+  const labelW = Math.max(...images.map((i) => `[Image #${i.label}]`.length), 8);
+
+  if (graphics && inTmux) enableTmuxPassthrough();
+
+  return new Promise<StoredImage | null>((resolve) => {
+    let sel = 0;
+    let placed = false;
+    let status = "";
+    let previewTimer: NodeJS.Timeout | undefined;
+
+    const deletePreview = (): void => {
+      if (placed) {
+        stdout.write(wrap(deleteByIdSeq(PREVIEW_ID), inTmux));
+        placed = false;
+      }
+    };
+
+    const renderText = (): void => {
+      const lines: string[] = [];
+      lines.push(
+        style.dim("↑/↓ move · enter view · c copy path · p print path · esc back")
+      );
+      lines.push("");
+      images.forEach((img, i) => {
+        const lbl = `[Image #${img.label}]${img.uncertain ? " ?" : ""}`.padEnd(labelW + 3);
+        const dims = humanDims(img.width, img.height).padEnd(11);
+        const size = humanSize(img.bytes).padStart(8);
+        const age = humanAge(img.ts);
+        const text = `${style.cyan(lbl)}  ${dims}  ${style.dim(size)}  ${style.dim(age)}`;
+        if (i === sel) lines.push(style.cyan("❯ ") + `\x1b[7m ${text} \x1b[0m`);
+        else lines.push("    " + text);
+      });
+      lines.push("");
+      if (status) lines.push(style.green(status));
+      else if (!graphics) lines.push(style.dim("preview off · PASTELS_FORCE_GRAPHICS=1 to force"));
+      stdout.write("\x1b[H\x1b[2J" + lines.join("\r\n"));
+    };
+
+    const renderPreview = (): void => {
+      if (!graphics) return;
+      deletePreview();
+      const img = images[sel];
+      stdout.write(`\x1b[2;${previewCol}H`);
+      if (!img || !isRenderable(img.mediaType)) {
+        stdout.write(style.dim(`(no preview${img ? ` — ${img.mediaType}` : ""})`));
+        return;
+      }
+      let bytes: Buffer;
+      try {
+        bytes = fs.readFileSync(img.file);
+      } catch {
+        stdout.write(style.dim("(unreadable)"));
+        return;
+      }
+      for (const seq of buildImageSequences(bytes, { id: PREVIEW_ID, rows: previewRows })) {
+        stdout.write(wrap(seq, inTmux));
+      }
+      placed = true;
+    };
+
+    const schedulePreview = (): void => {
+      if (!graphics) return;
+      if (previewTimer) clearTimeout(previewTimer);
+      previewTimer = setTimeout(renderPreview, 110);
+    };
+
+    let torn = false;
+    const teardown = (): void => {
+      if (torn) return;
+      torn = true;
+      if (previewTimer) clearTimeout(previewTimer);
+      deletePreview();
+      stdin.off("data", onData);
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      try {
+        stdin.setRawMode(false);
+      } catch {
+        // ignore
+      }
+      stdin.pause();
+      stdout.write("\x1b[?25h\x1b[?1049l");
+    };
+    const onSignal = (): void => {
+      teardown();
+      process.exit(130);
+    };
+    const done = (img: StoredImage | null): void => {
+      teardown();
+      resolve(img);
+    };
+
+    const onData = (d: Buffer): void => {
+      const s = d.toString("latin1");
+      if (s === "\x03" || s === "\x1b") return done(null);
+      if (s === "\r" || s === "\n") return done(images[sel] ?? null);
+      if (s === "\x1b[A") {
+        sel = Math.max(0, sel - 1);
+        status = "";
+        renderText();
+        return schedulePreview();
+      }
+      if (s === "\x1b[B") {
+        sel = Math.min(images.length - 1, sel + 1);
+        status = "";
+        renderText();
+        return schedulePreview();
+      }
+      if (s === "c" || s === "C") {
+        const img = images[sel];
+        if (img) {
+          status = copyToClipboard(img.file)
+            ? `copied [Image #${img.label}] path to clipboard`
+            : "no clipboard tool found (pbcopy / wl-copy / xclip)";
+          renderText();
+        }
+        return;
+      }
+      if (s === "p" || s === "P") {
+        const img = images[sel];
+        if (img) {
+          status = img.file;
+          renderText();
+        }
+        return;
+      }
+    };
+
+    stdout.write("\x1b[?1049h\x1b[?25l");
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+    try {
+      stdin.setRawMode(true);
+    } catch {
+      // ignore
+    }
+    stdin.resume();
+    stdin.on("data", onData);
+    renderText();
+    renderPreview();
   });
 }

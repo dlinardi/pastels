@@ -8,7 +8,7 @@ import { type Caps, detectCaps } from "./render/capability";
 import { printGallery } from "./render/gallery";
 import { deleteAllSeq, wrap } from "./render/kitty";
 import { show } from "./render/show";
-import { interactivePick } from "./render/tui";
+import { interactiveImagePick, interactivePick } from "./render/tui";
 import { copyToClipboard } from "./util/clipboard";
 import { humanAge, humanDims, humanSize, padVisible, style, truncate } from "./util/format";
 
@@ -81,7 +81,7 @@ function printSessionRows(
   });
 }
 
-async function pickSession(a: CaptureAdapter): Promise<Session | null> {
+async function pickSession(a: CaptureAdapter, caps: Caps): Promise<Session | null> {
   const slug = slugForCwd(process.cwd());
   const all = a.listSessions();
   const inProj = all.filter((s) => s.project === slug);
@@ -100,7 +100,6 @@ async function pickSession(a: CaptureAdapter): Promise<Session | null> {
 
   // interactive picker when we have a TTY; numbered prompt otherwise
   if (process.stdin.isTTY && process.stdout.isTTY) {
-    const caps = await detectCaps({ probe: true });
     const cache = new Map<string, Buffer | null>();
     const preview = (s: Session): Buffer | null => {
       if (cache.has(s.id)) return cache.get(s.id) ?? null;
@@ -360,48 +359,29 @@ async function cmdShow(arg: string | undefined, session?: Session): Promise<void
   if (!(await renderImage(ctx.images, n, caps))) process.exitCode = 1;
 }
 
-/** `pastels -s` with no follow-up command: pick a session, show its gallery,
- * then prompt for an [Image #N] to render full-screen — the "browse then view"
- * flow. (`pastels -s show N` / `pastels -s N` skip the prompt and go direct.) */
-async function cmdBrowse(session: Session): Promise<void> {
+/** `pastels -s` with no follow-up command: pick a session, then interactively
+ * navigate its images (arrow keys + live preview), Enter to view full-screen.
+ * (`pastels -s show N` / `pastels -s N` / `pastels -s path N` skip straight to
+ * the action.) Non-TTY falls back to a static gallery. */
+async function cmdBrowse(session: Session, caps: Caps): Promise<void> {
   const a = adapter();
-  const caps = await detectCaps({ probe: true });
   const images = loadImages(session, a);
-  printGallery(images, caps, session, a.summarize(session));
   gc(7);
 
-  if (!images.length || !process.stdin.isTTY) return;
-  process.stdout.write(
-    "\n" +
-      style.dim("N view · pN print path · cN copy path · enter exit: ")
-  );
-  const ans = (await readLine()).trim();
-  if (!ans) return;
+  if (!images.length) {
+    printGallery(images, caps, session, a.summarize(session));
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    printGallery(images, caps, session, a.summarize(session));
+    return;
+  }
 
-  let mode: "view" | "path" | "copy" = "view";
-  let numStr = ans;
-  if (/^[pc]/i.test(ans)) {
-    mode = ans[0]!.toLowerCase() === "p" ? "path" : "copy";
-    numStr = ans.slice(1).trim();
-  }
-  const n = Number(numStr);
-  if (!Number.isInteger(n)) {
-    console.error("not a number.");
-    return;
-  }
-  const img = findImage(images, n);
-  if (!img) {
-    console.error(`no [Image #${n}] in this session.`);
-    return;
-  }
-  if (mode === "view") {
-    await renderImage(images, n, caps);
-  } else {
-    console.log(img.file);
-    if (mode === "copy") {
-      if (copyToClipboard(img.file)) console.error(style.dim("copied to clipboard."));
-      else console.error("no clipboard tool found (pbcopy / wl-copy / xclip / xsel).");
-    }
+  // image picker ⇄ full-screen view loop until the user backs out
+  for (;;) {
+    const chosen = await interactiveImagePick(images, { caps });
+    if (!chosen) break;
+    await show(images, images.indexOf(chosen), caps);
   }
 }
 
@@ -467,9 +447,11 @@ async function main(): Promise<void> {
   // a leading -s / --session selects a session, then the remaining args run as usual
   let session: Session | undefined;
   let pickedViaFlag = false;
+  let pickedCaps: Caps | undefined;
   if (argv[0] === "-s" || argv[0] === "--session") {
     argv.shift();
-    const picked = await pickSession(adapter());
+    pickedCaps = await detectCaps({ probe: true }); // probe once, reused for picker + preview
+    const picked = await pickSession(adapter(), pickedCaps);
     if (!picked) {
       process.exitCode = 1;
       return;
@@ -481,8 +463,8 @@ async function main(): Promise<void> {
   const cmd = argv[0];
   switch (cmd) {
     case undefined:
-      // `pastels -s` → browse + prompt; bare `pastels` → default-session gallery
-      if (pickedViaFlag && session) await cmdBrowse(session);
+      // `pastels -s` → interactive image picker; bare `pastels` → default gallery
+      if (pickedViaFlag && session) await cmdBrowse(session, pickedCaps!);
       else await cmdGallery(json);
       break;
     case "-a":
