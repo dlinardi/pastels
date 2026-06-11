@@ -46,12 +46,21 @@ export function enableTmuxPassthrough(): void {
 }
 
 /**
- * Actively probe for kitty graphics support. Sends a graphics query (which paints
- * nothing) followed by a DA1 request as a sentinel, then reads the reply. A
- * graphics-capable terminal answers the query with `\x1b_Gi=31;OK`; everything
- * answers DA1, so DA1 arriving without a graphics reply means "unsupported".
+ * Actively probe for kitty graphics support. Sends a graphics query (a=q paints
+ * nothing) followed by a DA1 request, then reads the reply. A graphics-capable
+ * terminal answers the query with `\x1b_Gi=31;OK`.
+ *
+ * Ordering matters and differs by environment: bare terminals answer the graphics
+ * query *before* DA1, so DA1 is a valid "stop, it's unsupported" sentinel. Under
+ * tmux the graphics query takes an extra passthrough hop while DA1 may be answered
+ * by tmux itself — so DA1 can arrive FIRST. There we must NOT treat DA1 as a
+ * sentinel; we keep reading until the graphics reply lands or we time out (and we
+ * always drain briefly after deciding, so a late reply never echoes to the screen).
  */
-export function probeKittyGraphics(inTmux: boolean, timeoutMs = 400): Promise<boolean> {
+export function probeKittyGraphics(
+  inTmux: boolean,
+  timeoutMs = inTmux ? 1200 : 400
+): Promise<boolean> {
   const stdin = process.stdin;
   const stdout = process.stdout;
   if (!stdin.isTTY || !stdout.isTTY) return Promise.resolve(false);
@@ -64,13 +73,17 @@ export function probeKittyGraphics(inTmux: boolean, timeoutMs = 400): Promise<bo
 
   return new Promise<boolean>((resolve) => {
     let buf = "";
-    let done = false;
+    let settled = false;
+    let result = false;
     const prevRaw = stdin.isRaw;
+    let hardTimer: NodeJS.Timeout;
+    let drainTimer: NodeJS.Timeout | undefined;
 
-    const finish = (val: boolean): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
+    const cleanup = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      if (drainTimer) clearTimeout(drainTimer);
       stdin.off("data", onData);
       try {
         stdin.setRawMode(prevRaw);
@@ -78,13 +91,21 @@ export function probeKittyGraphics(inTmux: boolean, timeoutMs = 400): Promise<bo
         // ignore
       }
       stdin.pause();
-      resolve(val);
+      resolve(result);
+    };
+
+    // record the verdict, but keep consuming input briefly so trailing replies
+    // (e.g. a late DA1 answer) are swallowed instead of echoed to the screen.
+    const decide = (val: boolean, drainMs: number): void => {
+      result = val;
+      if (drainTimer) clearTimeout(drainTimer);
+      drainTimer = setTimeout(cleanup, drainMs);
     };
 
     const onData = (d: Buffer): void => {
       buf += d.toString("latin1");
-      if (buf.includes("\x1b_Gi=31")) return finish(true); // graphics OK reply
-      if (/\x1b\[\?[0-9;]*c/.test(buf)) return finish(buf.includes("_Gi=31")); // DA1 sentinel
+      if (buf.includes("\x1b_Gi=31")) return decide(true, 120); // graphics OK reply
+      if (!inTmux && /\x1b\[\?[0-9;]*c/.test(buf)) return decide(false, 30); // DA1 sentinel
     };
 
     try {
@@ -95,7 +116,10 @@ export function probeKittyGraphics(inTmux: boolean, timeoutMs = 400): Promise<bo
     stdin.resume();
     stdin.on("data", onData);
     stdout.write(query + da1);
-    const timer = setTimeout(() => finish(buf.includes("_Gi=31")), timeoutMs);
+    hardTimer = setTimeout(() => {
+      result = buf.includes("_Gi=31");
+      cleanup();
+    }, timeoutMs);
   });
 }
 
