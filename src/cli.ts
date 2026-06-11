@@ -100,7 +100,21 @@ async function pickSession(a: CaptureAdapter): Promise<Session | null> {
 
   // interactive picker when we have a TTY; numbered prompt otherwise
   if (process.stdin.isTTY && process.stdout.isTTY) {
-    return interactivePick(rows, { showRepo: crossProject });
+    const caps = await detectCaps({ probe: true });
+    const cache = new Map<string, Buffer | null>();
+    const preview = (s: Session): Buffer | null => {
+      if (cache.has(s.id)) return cache.get(s.id) ?? null;
+      let bytes: Buffer | null = null;
+      try {
+        const first = a.extractImages(s).find((i) => isRenderable(i.mediaType));
+        bytes = first ? first.bytes : null;
+      } catch {
+        bytes = null;
+      }
+      cache.set(s.id, bytes);
+      return bytes;
+    };
+    return interactivePick(rows, { showRepo: crossProject, caps, preview });
   }
 
   if (crossProject) {
