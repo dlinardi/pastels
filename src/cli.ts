@@ -38,16 +38,14 @@ function loadImages(session: Session, a: CaptureAdapter): StoredImage[] {
   return stored.sort((x, y) => x.label - y.label);
 }
 
-/** Pick the default session: most-recent session in the current project that has
- * images; else the most-recent session anywhere with images. */
+/** Most-recent session in the CURRENT project (by cwd slug) that has images.
+ * Strictly project-scoped — never crosses into another project's sessions, or
+ * `pastels show N` from one repo could surface a different repo's image. Use
+ * `pastels -s` to reach other projects' sessions. */
 function defaultSession(a: CaptureAdapter): { session: Session; images: StoredImage[] } | null {
   const slug = slugForCwd(process.cwd());
-  const all = a.listSessions();
-  const ordered = [
-    ...all.filter((s) => s.project === slug),
-    ...all.filter((s) => s.project !== slug),
-  ];
-  for (const s of ordered) {
+  const proj = a.listSessions().filter((s) => s.project === slug);
+  for (const s of proj) {
     const images = loadImages(s, a);
     if (images.length > 0) return { session: s, images };
   }
@@ -110,36 +108,28 @@ const PROJECT_SCAN_CAP = 25;
 
 /** Scan the current project: pick the most-recent session with images as active,
  * and count how many of the project's sessions have images (for the browse hint).
- * Falls back to the most-recent session anywhere when the cwd isn't a known project. */
+ * Strictly project-scoped — returns null (not another project's images) when the
+ * current directory has no recorded sessions. */
 function projectScan(
   a: CaptureAdapter
-): { active: Session; images: StoredImage[]; withImages: number; inProject: boolean } | null {
+): { active: Session; images: StoredImage[]; withImages: number } | null {
   const slug = slugForCwd(process.cwd());
-  const all = a.listSessions();
-  const proj = all.filter((s) => s.project === slug);
+  const proj = a.listSessions().filter((s) => s.project === slug);
 
-  if (proj.length) {
-    let active: Session | undefined;
-    let images: StoredImage[] = [];
-    let withImages = 0;
-    for (const s of proj.slice(0, PROJECT_SCAN_CAP)) {
-      const imgs = loadImages(s, a);
-      if (imgs.length) {
-        withImages++;
-        if (!active) {
-          active = s;
-          images = imgs;
-        }
+  let active: Session | undefined;
+  let images: StoredImage[] = [];
+  let withImages = 0;
+  for (const s of proj.slice(0, PROJECT_SCAN_CAP)) {
+    const imgs = loadImages(s, a);
+    if (imgs.length) {
+      withImages++;
+      if (!active) {
+        active = s;
+        images = imgs;
       }
     }
-    if (active) return { active, images, withImages, inProject: true };
-    return null;
   }
-
-  for (const s of all) {
-    const imgs = loadImages(s, a);
-    if (imgs.length) return { active: s, images: imgs, withImages: 1, inProject: false };
-  }
+  if (active) return { active, images, withImages };
   return null;
 }
 
@@ -149,12 +139,15 @@ async function cmdGallery(): Promise<void> {
 
   const r = projectScan(a);
   if (!r) {
-    console.log("no images found. paste an image into a Claude Code session, then try again.");
+    console.log(
+      "no images found for this project (no Claude Code sessions here with pasted images)."
+    );
+    console.log("  `pastels -s` to browse sessions from other projects.");
     return;
   }
 
   printGallery(r.images, caps, r.active);
-  if (r.inProject && r.withImages > 1) {
+  if (r.withImages > 1) {
     const others = r.withImages - 1;
     process.stdout.write(
       `\n  ${others} other session${others === 1 ? "" : "s"} in this project ${
@@ -225,7 +218,7 @@ async function cmdShow(arg: string | undefined, session?: Session): Promise<void
   const caps = await detectCaps({ probe: true });
   const ctx = session ? { session, images: loadImages(session, a) } : defaultSession(a);
   if (!ctx) {
-    console.error("no images found.");
+    console.error("no images found for this project. try `pastels -s` to pick another session.");
     process.exitCode = 1;
     return;
   }
@@ -264,7 +257,7 @@ async function cmdPath(arg: string | undefined, session?: Session): Promise<void
   const a = adapter();
   const ctx = session ? { session, images: loadImages(session, a) } : defaultSession(a);
   if (!ctx) {
-    console.error("no images found.");
+    console.error("no images found for this project. try `pastels -s` to pick another session.");
     process.exitCode = 1;
     return;
   }
