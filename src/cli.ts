@@ -164,11 +164,40 @@ function projectScan(
   return null;
 }
 
-async function cmdGallery(): Promise<void> {
-  const a = adapter();
-  const caps = await detectCaps();
+/** Stable, scriptable JSON shape for one stored image. */
+function imageJson(img: StoredImage, s: Session, info: SessionInfo) {
+  return {
+    label: img.label,
+    uncertain: img.uncertain,
+    width: img.width,
+    height: img.height,
+    bytes: img.bytes,
+    mediaType: img.mediaType,
+    path: img.file,
+    hash: img.hash,
+    ts: img.ts,
+    session: {
+      id: s.id,
+      project: s.project,
+      branch: info.gitBranch ?? null,
+      title: info.title,
+      cwd: info.cwd ?? null,
+    },
+  };
+}
 
+function emitJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+async function cmdGallery(json = false): Promise<void> {
+  const a = adapter();
   const r = projectScan(a);
+
+  if (json) {
+    emitJson(r ? r.images.map((i) => imageJson(i, r.active, r.info)) : []);
+    return;
+  }
   if (!r) {
     console.log(
       "no images found for this project (no Claude Code sessions here with pasted images)."
@@ -177,6 +206,7 @@ async function cmdGallery(): Promise<void> {
     return;
   }
 
+  const caps = await detectCaps();
   printGallery(r.images, caps, r.active, r.info);
   if (r.withImages > 1) {
     const others = r.withImages - 1;
@@ -193,12 +223,23 @@ async function cmdGallery(): Promise<void> {
 }
 
 /** `pastels -a` — every image in the current project, grouped by session. */
-async function cmdAll(): Promise<void> {
+async function cmdAll(json = false): Promise<void> {
   const a = adapter();
-  const caps = await detectCaps();
   const slug = slugForCwd(process.cwd());
   const proj = a.listSessions().filter((s) => s.project === slug);
 
+  if (json) {
+    const out: unknown[] = [];
+    for (const s of proj) {
+      const info = a.summarize(s);
+      if (info.imageCount === 0) continue;
+      for (const img of loadImages(s, a)) out.push(imageJson(img, s, info));
+    }
+    emitJson(out);
+    return;
+  }
+
+  const caps = await detectCaps();
   let any = false;
   for (const s of proj) {
     const info = a.summarize(s);
@@ -214,12 +255,19 @@ async function cmdAll(): Promise<void> {
 /** `pastels -A` — index of every image-bearing session across ALL projects,
  * grouped by project. The map for "show everything"; drill in with `cd` + pastels
  * or `pastels -s`. */
-function cmdGlobal(): void {
+function cmdGlobal(json = false): void {
   const a = adapter();
   const rows = a
     .listSessions()
     .map((s) => ({ s, info: a.summarize(s) }))
     .filter((x) => x.info.imageCount > 0);
+
+  if (json) {
+    const out: unknown[] = [];
+    for (const r of rows) for (const img of loadImages(r.s, a)) out.push(imageJson(img, r.s, r.info));
+    emitJson(out);
+    return;
+  }
 
   if (rows.length === 0) {
     console.log("no images found in any project.");
@@ -276,7 +324,7 @@ async function renderImage(
     console.log(img.file);
     return true;
   }
-  await show(img, caps);
+  await show(images, images.indexOf(img), caps);
   return true;
 }
 
@@ -309,25 +357,48 @@ async function cmdBrowse(session: Session): Promise<void> {
   gc(7);
 
   if (!images.length || !process.stdin.isTTY) return;
-  process.stdout.write("\nrender which? enter a number (or press enter to exit): ");
+  process.stdout.write(
+    "\n" +
+      style.dim("N view · pN print path · cN copy path · enter exit: ")
+  );
   const ans = (await readLine()).trim();
   if (!ans) return;
-  const n = Number(ans);
+
+  let mode: "view" | "path" | "copy" = "view";
+  let numStr = ans;
+  if (/^[pc]/i.test(ans)) {
+    mode = ans[0]!.toLowerCase() === "p" ? "path" : "copy";
+    numStr = ans.slice(1).trim();
+  }
+  const n = Number(numStr);
   if (!Number.isInteger(n)) {
     console.error("not a number.");
     return;
   }
-  await renderImage(images, n, caps);
+  const img = findImage(images, n);
+  if (!img) {
+    console.error(`no [Image #${n}] in this session.`);
+    return;
+  }
+  if (mode === "view") {
+    await renderImage(images, n, caps);
+  } else {
+    console.log(img.file);
+    if (mode === "copy") {
+      if (copyToClipboard(img.file)) console.error(style.dim("copied to clipboard."));
+      else console.error("no clipboard tool found (pbcopy / wl-copy / xclip / xsel).");
+    }
+  }
 }
 
 async function cmdPath(
   arg: string | undefined,
   session?: Session,
-  opts: { copy?: boolean } = {}
+  opts: { copy?: boolean; json?: boolean } = {}
 ): Promise<void> {
   const n = Number(arg);
   if (!arg || !Number.isInteger(n)) {
-    console.error("usage: pastels path N [--copy]");
+    console.error("usage: pastels path N [--copy] [--json]");
     process.exitCode = 1;
     return;
   }
@@ -344,7 +415,8 @@ async function cmdPath(
     process.exitCode = 1;
     return;
   }
-  console.log(img.file);
+  if (opts.json) emitJson(imageJson(img, ctx.session, a.summarize(ctx.session)));
+  else console.log(img.file);
   if (opts.copy) {
     if (copyToClipboard(img.file)) console.error(style.dim("copied to clipboard."));
     else console.error("no clipboard tool found (pbcopy / wl-copy / xclip / xsel).");
@@ -373,7 +445,10 @@ async function cmdClear(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
+  const raw = process.argv.slice(2);
+  // --json is a global flag, not a command/operand — strip it before dispatch
+  const json = raw.includes("--json");
+  const argv = raw.filter((a) => a !== "--json");
 
   // a leading -s / --session selects a session, then the remaining args run as usual
   let session: Session | undefined;
@@ -394,22 +469,22 @@ async function main(): Promise<void> {
     case undefined:
       // `pastels -s` → browse + prompt; bare `pastels` → default-session gallery
       if (pickedViaFlag && session) await cmdBrowse(session);
-      else await cmdGallery();
+      else await cmdGallery(json);
       break;
     case "-a":
     case "--all":
     case "all":
-      await cmdAll();
+      await cmdAll(json);
       break;
     case "-A":
     case "--global":
-      cmdGlobal();
+      cmdGlobal(json);
       break;
     case "show":
       await cmdShow(argv[1], session);
       break;
     case "path":
-      await cmdPath(argv[1], session, { copy: argv.includes("--copy") });
+      await cmdPath(argv[1], session, { copy: argv.includes("--copy"), json });
       break;
     case "gc":
       cmdGc(argv.slice(1));
