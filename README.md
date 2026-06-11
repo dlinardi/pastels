@@ -36,17 +36,25 @@ Full surface:
 ```
 pastels                  text gallery of the current session
 pastels -a               every image in this project, grouped by session
+pastels -A               index of image sessions across ALL projects
 pastels show N           full-pane render of [Image #N] (alt-screen, any-key to return)
 pastels N                shorthand for `pastels show N`
-pastels -s               pick a session → gallery → render one (works in tmux)
+pastels -s               interactive picker (↑/↓ + type-to-filter), then render
 pastels -s N             pick a session, then render [Image #N] from it
-pastels path N           print the stored file path for [Image #N]
+pastels path N [--copy]  print (and optionally clipboard-copy) the file path
 pastels gc [--days 7]    prune images not seen in N days
 pastels clear            panic: delete any stranded terminal graphics
 ```
 
 `[Image #N]` labels are **per-session** counters, so the bare gallery shows one
-session at a time; use `-a` to sweep the whole project or `-s` to pick a session.
+session at a time; use `-a` to sweep the whole project, `-A` for every project, or
+`-s` for an interactive, filterable session picker.
+
+### want more history?
+
+`pastels` can only see sessions Claude Code still keeps. Claude Code deletes old
+transcripts per its `cleanupPeriodDays` setting (default 30). To retain more, raise
+it in your Claude Code settings, e.g. `{ "cleanupPeriodDays": 365 }`.
 
 ## how it works
 
