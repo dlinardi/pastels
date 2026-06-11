@@ -1,9 +1,9 @@
 {
   "name": "pastels",
   "version": "0.0.1",
-  "description": "see what you pasted — image recall for agentic CLI sessions over SSH",
+  "description": "see what you pasted. image recall for agentic CLI sessions over SSH",
   "bin": {
-    "pastels": "./dist/cli.js"
+    "pastels": "dist/cli.js"
   },
   "files": [
     "dist"
