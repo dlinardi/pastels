@@ -39,6 +39,11 @@ export const style = {
   yellow: sgr("33"),
 };
 
+/** Truncate plain text to a max length with an ellipsis. */
+export function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
 /** Visible width of a string, ignoring SGR escape sequences (for padding). */
 export function visibleWidth(s: string): number {
   return s.replace(/\x1b\[[0-9;]*m/g, "").length;

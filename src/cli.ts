@@ -8,17 +8,20 @@ import { type Caps, detectCaps } from "./render/capability";
 import { printGallery } from "./render/gallery";
 import { deleteAllSeq, wrap } from "./render/kitty";
 import { show } from "./render/show";
-import { humanAge, humanDims, humanSize, padVisible, style } from "./util/format";
+import { interactivePick } from "./render/tui";
+import { copyToClipboard } from "./util/clipboard";
+import { humanAge, humanDims, humanSize, padVisible, style, truncate } from "./util/format";
 
 const USAGE = `pastels — see what you pasted
 
 usage:
   pastels                text gallery of images in the current session
   pastels -a             every image in this project, grouped by session
+  pastels -A             index of image sessions across ALL projects
   pastels show N         full-screen render of [Image #N] (alias: pastels N)
-  pastels -s             pick a session → gallery → render one (works in tmux)
+  pastels -s             interactive picker (arrow keys + filter), then render
   pastels -s N           pick a session, then render [Image #N] from it
-  pastels path N         print the stored file path for [Image #N]
+  pastels path N [--copy] print (and optionally clipboard-copy) the file path
   pastels gc [--days 7]  prune images not seen in N days
   pastels clear          panic: delete any stranded terminal graphics
 
@@ -59,18 +62,20 @@ function findImage(images: StoredImage[], n: number): StoredImage | undefined {
   return matches.find((i) => !i.uncertain) ?? matches[0];
 }
 
-/** Print one formatted session row: index · branch · N img · age · title (· repo). */
+/** Print one formatted session row: lead · branch · N img · age · title (· repo). */
 function printSessionRows(
   rows: { s: Session; info: SessionInfo }[],
-  showRepo: boolean
+  showRepo: boolean,
+  numbered = true
 ): void {
-  const branchW = Math.max(...rows.map((r) => (r.info.gitBranch ?? "—").length), 6);
+  const branches = rows.map((r) => truncate(r.info.gitBranch ?? "—", 26));
+  const branchW = Math.max(...branches.map((b) => b.length), 6);
   rows.forEach((r, i) => {
-    const idx = style.dim(`${String(i + 1).padStart(2)}.`);
-    const branch = padVisible(style.cyan(r.info.gitBranch ?? "—"), branchW + 2);
+    const lead = numbered ? style.dim(`${String(i + 1).padStart(2)}.`) : style.dim(" ·");
+    const branch = padVisible(style.cyan(branches[i]!), branchW + 2);
     const count = style.dim(`${r.info.imageCount} img`.padStart(7));
     const age = padVisible(style.dim(humanAge(r.info.startedAt)), 9);
-    let line = `  ${idx} ${branch} ${count}  ${age}  ${r.info.title}`;
+    let line = `  ${lead} ${branch} ${count}  ${age}  ${r.info.title}`;
     if (showRepo && r.info.cwd) line += style.dim(`  · ${path.basename(r.info.cwd)}`);
     console.log(line);
   });
@@ -91,6 +96,11 @@ async function pickSession(a: CaptureAdapter): Promise<Session | null> {
   if (rows.length === 0) {
     console.error("no sessions with images found.");
     return null;
+  }
+
+  // interactive picker when we have a TTY; numbered prompt otherwise
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    return interactivePick(rows, { showRepo: crossProject });
   }
 
   if (crossProject) {
@@ -201,6 +211,47 @@ async function cmdAll(): Promise<void> {
   gc(7);
 }
 
+/** `pastels -A` — index of every image-bearing session across ALL projects,
+ * grouped by project. The map for "show everything"; drill in with `cd` + pastels
+ * or `pastels -s`. */
+function cmdGlobal(): void {
+  const a = adapter();
+  const rows = a
+    .listSessions()
+    .map((s) => ({ s, info: a.summarize(s) }))
+    .filter((x) => x.info.imageCount > 0);
+
+  if (rows.length === 0) {
+    console.log("no images found in any project.");
+    return;
+  }
+
+  const groups = new Map<string, { s: Session; info: SessionInfo }[]>();
+  for (const r of rows) {
+    const g = groups.get(r.s.project) ?? [];
+    g.push(r);
+    groups.set(r.s.project, g);
+  }
+
+  let totalImages = 0;
+  const home = process.env.HOME ?? "";
+  for (const [, grp] of groups) {
+    const cwd = grp[0]!.info.cwd;
+    const where = cwd ? (home ? cwd.replace(home, "~") : cwd) : grp[0]!.s.project;
+    console.log(style.bold(where));
+    printSessionRows(grp, false, false);
+    console.log("");
+    totalImages += grp.reduce((n, x) => n + x.info.imageCount, 0);
+  }
+  console.log(
+    style.dim(
+      `${rows.length} sessions · ${totalImages} images · ${groups.size} projects — ` +
+        `cd in then \`pastels\`, or \`pastels -s\` to view.`
+    )
+  );
+  gc(7);
+}
+
 /** Render [Image #n] from an already-loaded set. Degrades to a path for
  * non-graphics terminals or non-PNG formats. Returns false if no such image. */
 async function renderImage(
@@ -269,10 +320,14 @@ async function cmdBrowse(session: Session): Promise<void> {
   await renderImage(images, n, caps);
 }
 
-async function cmdPath(arg: string | undefined, session?: Session): Promise<void> {
+async function cmdPath(
+  arg: string | undefined,
+  session?: Session,
+  opts: { copy?: boolean } = {}
+): Promise<void> {
   const n = Number(arg);
   if (!arg || !Number.isInteger(n)) {
-    console.error("usage: pastels path N");
+    console.error("usage: pastels path N [--copy]");
     process.exitCode = 1;
     return;
   }
@@ -290,6 +345,10 @@ async function cmdPath(arg: string | undefined, session?: Session): Promise<void
     return;
   }
   console.log(img.file);
+  if (opts.copy) {
+    if (copyToClipboard(img.file)) console.error(style.dim("copied to clipboard."));
+    else console.error("no clipboard tool found (pbcopy / wl-copy / xclip / xsel).");
+  }
 }
 
 function cmdGc(args: string[]): void {
@@ -342,11 +401,15 @@ async function main(): Promise<void> {
     case "all":
       await cmdAll();
       break;
+    case "-A":
+    case "--global":
+      cmdGlobal();
+      break;
     case "show":
       await cmdShow(argv[1], session);
       break;
     case "path":
-      await cmdPath(argv[1], session);
+      await cmdPath(argv[1], session, { copy: argv.includes("--copy") });
       break;
     case "gc":
       cmdGc(argv.slice(1));
