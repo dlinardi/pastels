@@ -41,6 +41,30 @@ function isUserRecord(rec: any): boolean {
   return rec?.type === "user" || rec?.message?.role === "user";
 }
 
+// Skip harness-injected wrappers (slash-command output, caveats, reminders,
+// interrupts) when choosing a human-readable title.
+function isMetaText(text: string): boolean {
+  const s = text.trim();
+  return (
+    s === "" ||
+    /^<[a-z][\w-]*>/i.test(s) ||
+    s.startsWith("Caveat:") ||
+    s.startsWith("[Request interrupted")
+  );
+}
+
+/** First meaningful (non-meta) user text in a content value, if any. */
+function firstPromptText(content: unknown): string | undefined {
+  const texts: string[] = Array.isArray(content)
+    ? (content as any[])
+        .filter((b) => b && b.type === "text" && typeof b.text === "string")
+        .map((b) => b.text)
+    : typeof content === "string"
+      ? [content]
+      : [];
+  return texts.find((t) => !isMetaText(t));
+}
+
 function collectTextRefs(content: unknown[]): number[] {
   const refs: number[] = [];
   for (const block of content) {
@@ -223,14 +247,10 @@ export class ClaudeCodeTranscriptAdapter implements CaptureAdapter {
       const content = (rec?.message ?? rec)?.content;
       if (Array.isArray(content)) {
         for (const b of content) if (b && b.type === "image") imageCount++;
-        if (!title && isUserRecord(rec)) {
-          const tb = content.find(
-            (b: any) => b && b.type === "text" && typeof b.text === "string"
-          );
-          if (tb) title = normalizeTitle(tb.text);
-        }
-      } else if (typeof content === "string" && !title && isUserRecord(rec)) {
-        title = normalizeTitle(content);
+      }
+      if (!title && isUserRecord(rec)) {
+        const prompt = firstPromptText(content);
+        if (prompt) title = normalizeTitle(prompt);
       }
     }
 
