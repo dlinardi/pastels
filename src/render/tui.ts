@@ -109,6 +109,7 @@ export function interactivePick(
     let filtered = rows;
     let placed = false;
     let previewTimer: NodeJS.Timeout | undefined;
+    let mode: "nav" | "filter" = "nav";
 
     const deletePreview = (): void => {
       if (placed) {
@@ -122,7 +123,13 @@ export function interactivePick(
       if (sel >= filtered.length) sel = Math.max(0, filtered.length - 1);
 
       const lines: string[] = [];
-      lines.push(style.dim("↑/↓ move · type to filter · enter open · esc quit"));
+      lines.push(
+        style.dim(
+          mode === "filter"
+            ? "type to filter · enter/esc apply · ctrl-c quit"
+            : "↑/↓ j/k move · / filter · enter/l open · q/h quit"
+        )
+      );
       lines.push("");
 
       const start = Math.min(
@@ -141,6 +148,7 @@ export function interactivePick(
       lines.push(
         style.dim("filter: ") +
           (query ? style.bold(query) : style.dim("(all)")) +
+          (mode === "filter" ? style.cyan("▏") : "") +
           style.dim(`   ${filtered.length}/${rows.length}`)
       );
       if (!graphics && opts.caps?.isTTY) {
@@ -200,32 +208,57 @@ export function interactivePick(
       resolve(session);
     };
 
+    const move = (delta: number): void => {
+      sel = Math.min(filtered.length - 1, Math.max(0, sel + delta));
+      renderText();
+      schedulePreview();
+    };
+
     const onData = (d: Buffer): void => {
       const s = d.toString("latin1");
-      if (s === "\x03" || s === "\x1b") return done(null);
-      if (s === "\r" || s === "\n") return done(filtered[sel]?.s ?? null);
-      if (s === "\x1b[A") {
-        sel = Math.max(0, sel - 1);
-        renderText();
-        return schedulePreview();
+      if (s === "\x03") return done(null); // ctrl-c always quits
+      if (s === "\x1b[A") return move(-1);
+      if (s === "\x1b[B") return move(1);
+
+      if (mode === "filter") {
+        if (s === "\r" || s === "\n" || s === "\x1b") {
+          mode = "nav";
+          return renderText();
+        }
+        if (s === "\x7f" || s === "\b") {
+          query = query.slice(0, -1);
+          sel = 0;
+          renderText();
+          return schedulePreview();
+        }
+        if (s.length === 1 && s >= " " && s <= "~") {
+          query += s;
+          sel = 0;
+          renderText();
+          return schedulePreview();
+        }
+        return;
       }
-      if (s === "\x1b[B") {
-        sel = Math.min(filtered.length - 1, sel + 1);
-        renderText();
-        return schedulePreview();
-      }
-      if (s === "\x7f" || s === "\b") {
-        query = query.slice(0, -1);
+
+      // nav mode (vim keys)
+      if (s === "j") return move(1);
+      if (s === "k") return move(-1);
+      if (s === "g") {
         sel = 0;
         renderText();
         return schedulePreview();
       }
-      if (s.length === 1 && s >= " " && s <= "~") {
-        query += s;
-        sel = 0;
+      if (s === "G") {
+        sel = Math.max(0, filtered.length - 1);
         renderText();
         return schedulePreview();
       }
+      if (s === "/" || s === "f") {
+        mode = "filter";
+        return renderText();
+      }
+      if (s === "\r" || s === "\n" || s === "l") return done(filtered[sel]?.s ?? null);
+      if (s === "q" || s === "h" || s === "\x1b") return done(null);
     };
 
     stdout.write("\x1b[?1049h\x1b[?25l"); // alt-screen, hide cursor
@@ -285,7 +318,7 @@ export function interactiveImagePick(
     const renderText = (): void => {
       const lines: string[] = [];
       lines.push(
-        style.dim("↑/↓ move · enter view · c copy path · p print path · esc back")
+        style.dim("↑/↓ j/k move · enter/l view · c copy · p path · q/h back")
       );
       lines.push("");
       images.forEach((img, i) => {
@@ -357,18 +390,27 @@ export function interactiveImagePick(
       resolve(img);
     };
 
+    const move = (delta: number): void => {
+      sel = Math.min(images.length - 1, Math.max(0, sel + delta));
+      status = "";
+      renderText();
+      schedulePreview();
+    };
+
     const onData = (d: Buffer): void => {
       const s = d.toString("latin1");
-      if (s === "\x03" || s === "\x1b") return done(null);
-      if (s === "\r" || s === "\n") return done(images[sel] ?? null);
-      if (s === "\x1b[A") {
-        sel = Math.max(0, sel - 1);
+      if (s === "\x03" || s === "\x1b" || s === "q" || s === "h") return done(null);
+      if (s === "\r" || s === "\n" || s === "l") return done(images[sel] ?? null);
+      if (s === "\x1b[A" || s === "k") return move(-1);
+      if (s === "\x1b[B" || s === "j") return move(1);
+      if (s === "g") {
+        sel = 0;
         status = "";
         renderText();
         return schedulePreview();
       }
-      if (s === "\x1b[B") {
-        sel = Math.min(images.length - 1, sel + 1);
+      if (s === "G") {
+        sel = Math.max(0, images.length - 1);
         status = "";
         renderText();
         return schedulePreview();
