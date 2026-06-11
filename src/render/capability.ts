@@ -59,7 +59,7 @@ export function enableTmuxPassthrough(): void {
  */
 export function probeKittyGraphics(
   inTmux: boolean,
-  timeoutMs = inTmux ? 1200 : 400
+  timeoutMs = inTmux ? 2000 : 500
 ): Promise<boolean> {
   const stdin = process.stdin;
   const stdout = process.stdout;
