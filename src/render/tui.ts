@@ -90,9 +90,16 @@ export function interactivePick(
   const rowsTotal = stdout.rows ?? 24;
   const graphics = !!(opts.caps?.graphics && opts.caps?.isTTY && opts.preview);
   const inTmux = !!opts.caps?.inTmux;
-  const previewCol = graphics ? Math.max(44, Math.floor(cols * 0.5)) : 0;
-  const leftWidth = graphics ? previewCol - 3 : undefined;
-  const previewRows = Math.min(Math.max(6, rowsTotal - 5), 20);
+  // tmux can't place images at an arbitrary column reliably (it doesn't track
+  // image cells) — so under tmux we STACK: image pinned top-left (home placement,
+  // the reliable path), list below it. Outside tmux, side-by-side on the right.
+  const stacked = graphics && inTmux;
+  const previewCol = graphics && !stacked ? Math.max(44, Math.floor(cols * 0.5)) : 0;
+  const leftWidth = graphics && !stacked ? previewCol - 3 : undefined;
+  const previewRows = stacked
+    ? Math.min(14, Math.max(6, rowsTotal - 12))
+    : Math.min(Math.max(6, rowsTotal - 5), 20);
+  const listTop = stacked ? previewRows + 2 : 1;
 
   if (graphics && inTmux) enableTmuxPassthrough();
 
@@ -140,14 +147,14 @@ export function interactivePick(
         lines.push(style.dim("preview off · PASTELS_FORCE_GRAPHICS=1 to force"));
       }
 
-      stdout.write("\x1b[H\x1b[2J" + lines.join("\r\n"));
+      stdout.write(`\x1b[2J\x1b[${listTop};1H` + lines.join("\r\n"));
     };
 
     const renderPreview = (): void => {
       if (!graphics) return;
       deletePreview();
       const row = filtered[sel];
-      stdout.write(`\x1b[2;${previewCol}H`); // move to preview region
+      stdout.write(stacked ? "\x1b[1;1H" : `\x1b[2;${previewCol}H`); // image origin
       const bytes = row ? opts.preview!(row.s) : null;
       if (!bytes) {
         stdout.write(style.dim("(no preview)"));
@@ -251,8 +258,13 @@ export function interactiveImagePick(
   const rowsTotal = stdout.rows ?? 24;
   const graphics = !!(opts.caps?.graphics && opts.caps?.isTTY);
   const inTmux = !!opts.caps?.inTmux;
-  const previewCol = graphics ? Math.max(40, Math.floor(cols * 0.45)) : 0;
-  const previewRows = Math.min(Math.max(6, rowsTotal - 5), 22);
+  // tmux: stack (image top-left, list below); else side-by-side on the right.
+  const stacked = graphics && inTmux;
+  const previewCol = graphics && !stacked ? Math.max(40, Math.floor(cols * 0.45)) : 0;
+  const previewRows = stacked
+    ? Math.min(14, Math.max(6, rowsTotal - 12))
+    : Math.min(Math.max(6, rowsTotal - 5), 22);
+  const listTop = stacked ? previewRows + 2 : 1;
   const labelW = Math.max(...images.map((i) => `[Image #${i.label}]`.length), 8);
 
   if (graphics && inTmux) enableTmuxPassthrough();
@@ -288,14 +300,14 @@ export function interactiveImagePick(
       lines.push("");
       if (status) lines.push(style.green(status));
       else if (!graphics) lines.push(style.dim("preview off · PASTELS_FORCE_GRAPHICS=1 to force"));
-      stdout.write("\x1b[H\x1b[2J" + lines.join("\r\n"));
+      stdout.write(`\x1b[2J\x1b[${listTop};1H` + lines.join("\r\n"));
     };
 
     const renderPreview = (): void => {
       if (!graphics) return;
       deletePreview();
       const img = images[sel];
-      stdout.write(`\x1b[2;${previewCol}H`);
+      stdout.write(stacked ? "\x1b[1;1H" : `\x1b[2;${previewCol}H`);
       if (!img || !isRenderable(img.mediaType)) {
         stdout.write(style.dim(`(no preview${img ? ` — ${img.mediaType}` : ""})`));
         return;
