@@ -29,6 +29,20 @@ export interface CapturedImage {
   sessionId?: string;
 }
 
+/** Lightweight, human-meaningful metadata for a session — for pickers/headers. */
+export interface SessionInfo {
+  /** first user prompt, normalised + truncated; a recognisable title */
+  title: string;
+  /** working directory the session ran in */
+  cwd?: string;
+  /** git branch at session start */
+  gitBranch?: string;
+  /** ISO timestamp of the first record */
+  startedAt?: string;
+  /** number of recoverable images in the session */
+  imageCount: number;
+}
+
 export interface CaptureAdapter {
   /** stable adapter name, e.g. "claude-code" */
   name: string;
@@ -38,4 +52,6 @@ export interface CaptureAdapter {
   listSessions(): Session[];
   /** recover images from a session, in document order */
   extractImages(session: Session): CapturedImage[];
+  /** cheap (no base64 decode) metadata for a session */
+  summarize(session: Session): SessionInfo;
 }

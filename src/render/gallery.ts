@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import type { Session } from "../adapters/types";
+import type { Session, SessionInfo } from "../adapters/types";
 import type { StoredImage } from "../core/store";
 import { isRenderable } from "../core/png";
-import { humanAge, humanDims, humanSize } from "../util/format";
+import { humanAge, humanDims, humanSize, style } from "../util/format";
 import type { Caps } from "./capability";
 import { buildImageSequences, imageIdFromHash, wrap } from "./kitty";
 
@@ -10,9 +10,26 @@ import { buildImageSequences, imageIdFromHash, wrap } from "./kitty";
 // item 3). Inline thumbnails are appended ONLY when not in tmux, where kitty
 // graphics place cleanly; in tmux we print a one-line hint to use `show N`.
 
+/** A one/two-line header describing the session: branch · N images · age + title. */
+export function galleryHeader(
+  session: Session | undefined,
+  info: SessionInfo | undefined,
+  count: number
+): string | null {
+  if (!session) return null;
+  const parts: string[] = [];
+  if (info?.gitBranch) parts.push(style.cyan(info.gitBranch));
+  parts.push(`${count} image${count === 1 ? "" : "s"}`);
+  if (info?.startedAt) parts.push(style.dim(humanAge(info.startedAt)));
+  let header = parts.join(style.dim(" · "));
+  if (info?.title) header += "\n" + style.dim(`  "${info.title}"`);
+  return header;
+}
+
 export function buildGalleryText(
   images: StoredImage[],
   session?: Session,
+  info?: SessionInfo,
   now = Date.now()
 ): string {
   if (images.length === 0) {
@@ -36,9 +53,8 @@ export function buildGalleryText(
   };
 
   const lines: string[] = [];
-  if (session) {
-    lines.push(`session ${session.id}  ·  ${images.length} image${images.length === 1 ? "" : "s"}`);
-  }
+  const header = galleryHeader(session, info, images.length);
+  if (header) lines.push(header);
   for (const r of rows) {
     lines.push(
       `  ${r.label.padEnd(w.label)}   ${r.dims.padEnd(w.dims)}   ${r.size.padStart(
@@ -60,12 +76,13 @@ export function printGallery(
   images: StoredImage[],
   caps: Caps,
   session?: Session,
+  info?: SessionInfo,
   out: NodeJS.WriteStream = process.stdout
 ): void {
   const thumbs = !caps.inTmux && caps.graphics && caps.isTTY;
 
   if (!thumbs) {
-    out.write(buildGalleryText(images, session) + "\n");
+    out.write(buildGalleryText(images, session, info) + "\n");
     if (images.length > 0 && caps.inTmux) {
       out.write("\n  in tmux: run `pastels show N` to view an image full-screen.\n");
     }
@@ -76,9 +93,8 @@ export function printGallery(
     out.write("no images found in this session.\n");
     return;
   }
-  if (session) {
-    out.write(`session ${session.id}  ·  ${images.length} images\n\n`);
-  }
+  const header = galleryHeader(session, info, images.length);
+  if (header) out.write(header + "\n\n");
   for (const img of images) {
     const label = `[Image #${img.label}]${img.uncertain ? " ?" : ""}`;
     out.write(

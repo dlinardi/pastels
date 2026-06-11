@@ -25,3 +25,27 @@ export function humanDims(w: number | null, h: number | null): string {
   if (w == null || h == null) return "?×?";
   return `${w}×${h}`;
 }
+
+// Minimal ANSI styling — only when stdout is a TTY and NO_COLOR is unset.
+const useColor = !!process.stdout.isTTY && !process.env.NO_COLOR;
+const sgr = (code: string) => (s: string | number) =>
+  useColor ? `\x1b[${code}m${s}\x1b[0m` : String(s);
+
+export const style = {
+  dim: sgr("2"),
+  bold: sgr("1"),
+  cyan: sgr("36"),
+  green: sgr("32"),
+  yellow: sgr("33"),
+};
+
+/** Visible width of a string, ignoring SGR escape sequences (for padding). */
+export function visibleWidth(s: string): number {
+  return s.replace(/\x1b\[[0-9;]*m/g, "").length;
+}
+
+/** Pad a (possibly styled) string to a visible width. */
+export function padVisible(s: string, width: number): string {
+  const pad = width - visibleWidth(s);
+  return pad > 0 ? s + " ".repeat(pad) : s;
+}

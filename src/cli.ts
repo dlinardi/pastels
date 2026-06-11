@@ -1,13 +1,14 @@
 #!/usr/bin/env node
+import path from "node:path";
 import { ClaudeCodeTranscriptAdapter, slugForCwd } from "./adapters/claude-code";
-import type { CaptureAdapter, Session } from "./adapters/types";
+import type { CaptureAdapter, Session, SessionInfo } from "./adapters/types";
 import { isRenderable } from "./core/png";
 import { gc, ingest, type StoredImage } from "./core/store";
 import { type Caps, detectCaps } from "./render/capability";
 import { printGallery } from "./render/gallery";
 import { deleteAllSeq, wrap } from "./render/kitty";
 import { show } from "./render/show";
-import { humanDims, humanSize } from "./util/format";
+import { humanAge, humanDims, humanSize, padVisible, style } from "./util/format";
 
 const USAGE = `pastels — see what you pasted
 
@@ -58,34 +59,53 @@ function findImage(images: StoredImage[], n: number): StoredImage | undefined {
   return matches.find((i) => !i.uncertain) ?? matches[0];
 }
 
+/** Print one formatted session row: index · branch · N img · age · title (· repo). */
+function printSessionRows(
+  rows: { s: Session; info: SessionInfo }[],
+  showRepo: boolean
+): void {
+  const branchW = Math.max(...rows.map((r) => (r.info.gitBranch ?? "—").length), 6);
+  rows.forEach((r, i) => {
+    const idx = style.dim(`${String(i + 1).padStart(2)}.`);
+    const branch = padVisible(style.cyan(r.info.gitBranch ?? "—"), branchW + 2);
+    const count = style.dim(`${r.info.imageCount} img`.padStart(7));
+    const age = padVisible(style.dim(humanAge(r.info.startedAt)), 9);
+    let line = `  ${idx} ${branch} ${count}  ${age}  ${r.info.title}`;
+    if (showRepo && r.info.cwd) line += style.dim(`  · ${path.basename(r.info.cwd)}`);
+    console.log(line);
+  });
+}
+
 async function pickSession(a: CaptureAdapter): Promise<Session | null> {
   const slug = slugForCwd(process.cwd());
   const all = a.listSessions();
-  const list = (all.filter((s) => s.project === slug).length
-    ? all.filter((s) => s.project === slug)
-    : all
-  ).slice(0, 20);
+  const inProj = all.filter((s) => s.project === slug);
+  const crossProject = inProj.length === 0;
+  const pool = crossProject ? all : inProj;
 
-  if (list.length === 0) {
-    console.error("no sessions found.");
+  // cheap metadata for each (no base64 decode); only sessions that actually have images
+  const rows = pool
+    .map((s) => ({ s, info: a.summarize(s) }))
+    .filter((x) => x.info.imageCount > 0);
+
+  if (rows.length === 0) {
+    console.error("no sessions with images found.");
     return null;
   }
 
-  list.forEach((s, i) => {
-    const count = a.extractImages(s).length;
-    console.log(
-      `  ${String(i + 1).padStart(2)}.  ${s.id}  ·  ${count} image${count === 1 ? "" : "s"}`
-    );
-  });
-  process.stdout.write("\nselect a session [1]: ");
+  if (crossProject) {
+    console.log(style.dim("no sessions for this directory — showing all projects:\n"));
+  }
+  printSessionRows(rows, crossProject);
+  process.stdout.write(`\nselect a session ${style.dim("[1]")}: `);
 
   const answer = await readLine();
   const idx = answer.trim() === "" ? 0 : Number(answer.trim()) - 1;
-  if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) {
+  if (!Number.isInteger(idx) || idx < 0 || idx >= rows.length) {
     console.error("invalid selection.");
     return null;
   }
-  return list[idx]!;
+  return rows[idx]!.s;
 }
 
 function readLine(): Promise<string> {
@@ -104,32 +124,33 @@ function readLine(): Promise<string> {
   });
 }
 
-const PROJECT_SCAN_CAP = 25;
-
-/** Scan the current project: pick the most-recent session with images as active,
- * and count how many of the project's sessions have images (for the browse hint).
+/** Scan the current project (ALL sessions, cheaply): pick the most-recent session
+ * with images as active, and count how many sessions have images (browse hint).
  * Strictly project-scoped — returns null (not another project's images) when the
- * current directory has no recorded sessions. */
+ * current directory has no recorded sessions. Only the chosen session is fully
+ * loaded; the rest are summarised without decoding base64. */
 function projectScan(
   a: CaptureAdapter
-): { active: Session; images: StoredImage[]; withImages: number } | null {
+): { active: Session; images: StoredImage[]; info: SessionInfo; withImages: number } | null {
   const slug = slugForCwd(process.cwd());
   const proj = a.listSessions().filter((s) => s.project === slug);
 
   let active: Session | undefined;
-  let images: StoredImage[] = [];
+  let activeInfo: SessionInfo | undefined;
   let withImages = 0;
-  for (const s of proj.slice(0, PROJECT_SCAN_CAP)) {
-    const imgs = loadImages(s, a);
-    if (imgs.length) {
+  for (const s of proj) {
+    const info = a.summarize(s);
+    if (info.imageCount > 0) {
       withImages++;
       if (!active) {
         active = s;
-        images = imgs;
+        activeInfo = info;
       }
     }
   }
-  if (active) return { active, images, withImages };
+  if (active && activeInfo) {
+    return { active, images: loadImages(active, a), info: activeInfo, withImages };
+  }
   return null;
 }
 
@@ -146,13 +167,14 @@ async function cmdGallery(): Promise<void> {
     return;
   }
 
-  printGallery(r.images, caps, r.active);
+  printGallery(r.images, caps, r.active, r.info);
   if (r.withImages > 1) {
     const others = r.withImages - 1;
     process.stdout.write(
-      `\n  ${others} other session${others === 1 ? "" : "s"} in this project ${
-        others === 1 ? "has" : "have"
-      } images — \`pastels -s\` to browse one, \`pastels -a\` for all.\n`
+      style.dim(
+        `\n  most recent of ${r.withImages} sessions here — ${others} more with images. ` +
+          `\`pastels -s\` to pick · \`pastels -a\` for all.\n`
+      )
     );
   }
   // opportunistic, silent housekeeping (PRD §5.3) — by file mtime, never the
@@ -169,10 +191,10 @@ async function cmdAll(): Promise<void> {
 
   let any = false;
   for (const s of proj) {
-    const imgs = loadImages(s, a);
-    if (!imgs.length) continue;
+    const info = a.summarize(s);
+    if (info.imageCount === 0) continue;
     if (any) process.stdout.write("\n");
-    printGallery(imgs, caps, s);
+    printGallery(loadImages(s, a), caps, s, info);
     any = true;
   }
   if (!any) console.log("no images found in this project.");
@@ -232,7 +254,7 @@ async function cmdBrowse(session: Session): Promise<void> {
   const a = adapter();
   const caps = await detectCaps({ probe: true });
   const images = loadImages(session, a);
-  printGallery(images, caps, session);
+  printGallery(images, caps, session, a.summarize(session));
   gc(7);
 
   if (!images.length || !process.stdin.isTTY) return;

@@ -52,6 +52,21 @@ describe("ClaudeCodeTranscriptAdapter — canary", () => {
   });
 });
 
+describe("summarize", () => {
+  const adapter = new ClaudeCodeTranscriptAdapter();
+  it("derives title, image count, and timestamp without decoding base64", () => {
+    const info = adapter.summarize(fixtureSession());
+    expect(info.imageCount).toBe(6); // all image blocks incl. the data-less one
+    expect(info.title).toContain("[Image #1]"); // first user text block
+    expect(info.startedAt).toBe("2026-06-01T10:00:00.000Z");
+  });
+  it("degrades to a placeholder title for an unreadable transcript", () => {
+    const info = adapter.summarize({ id: "x", path: "/no/such.jsonl", project: "p", mtime: 0 });
+    expect(info.imageCount).toBe(0);
+    expect(info.title).toBe("(unreadable)");
+  });
+});
+
 describe("slugForCwd", () => {
   it("collapses non-alphanumerics to dashes (Claude Code's rule)", () => {
     expect(slugForCwd("/Users/dave/Developer/pastels")).toBe(

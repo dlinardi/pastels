@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { CaptureAdapter, CapturedImage, Session } from "./types";
+import type { CaptureAdapter, CapturedImage, Session, SessionInfo } from "./types";
 
 // Claude Code persists session transcripts as JSONL under
 //   ~/.claude/projects/<project-slug>/<session-id>.jsonl
@@ -29,6 +29,16 @@ export function projectsDir(): string {
 /** Claude Code's project-slug rule: cwd with non-alphanumerics collapsed to '-'. */
 export function slugForCwd(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+function normalizeTitle(text: string, max = 64): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+
+function isUserRecord(rec: any): boolean {
+  return rec?.type === "user" || rec?.message?.role === "user";
 }
 
 function collectTextRefs(content: unknown[]): number[] {
@@ -178,5 +188,52 @@ export class ClaudeCodeTranscriptAdapter implements CaptureAdapter {
     }
 
     return images;
+  }
+
+  summarize(session: Session): SessionInfo {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(session.path, "utf8");
+    } catch {
+      return { title: "(unreadable)", imageCount: 0 };
+    }
+
+    let title: string | undefined;
+    let cwd: string | undefined;
+    let gitBranch: string | undefined;
+    let startedAt: string | undefined;
+    let imageCount = 0;
+
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let rec: any;
+      try {
+        rec = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+
+      if (!startedAt && typeof rec?.timestamp === "string") startedAt = rec.timestamp;
+      if (!cwd && typeof rec?.cwd === "string") cwd = rec.cwd;
+      if (!gitBranch && typeof rec?.gitBranch === "string" && rec.gitBranch) {
+        gitBranch = rec.gitBranch;
+      }
+
+      const content = (rec?.message ?? rec)?.content;
+      if (Array.isArray(content)) {
+        for (const b of content) if (b && b.type === "image") imageCount++;
+        if (!title && isUserRecord(rec)) {
+          const tb = content.find(
+            (b: any) => b && b.type === "text" && typeof b.text === "string"
+          );
+          if (tb) title = normalizeTitle(tb.text);
+        }
+      } else if (typeof content === "string" && !title && isUserRecord(rec)) {
+        title = normalizeTitle(content);
+      }
+    }
+
+    return { title: title || "(no prompt)", cwd, gitBranch, startedAt, imageCount };
   }
 }
