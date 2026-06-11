@@ -1,106 +1,129 @@
 # pastels
 
-> see what you pasted — image recall for agentic CLI sessions over SSH.
+> See what you pasted. Image recall for agentic CLI sessions over SSH.
 
 When you paste an image into Claude Code, the chat shows an opaque reference like
-`[Image #1]` with no way to see it again. Claude Code's answer — Cmd+Click the
-link to open it in your viewer — **breaks over SSH**: the "viewer" is on the
-headless remote and the path doesn't exist locally.
+`[Image #1]` and gives you no way to look at it again. The bytes are buried in the
+session transcript on disk. Over SSH it is worse, because those bytes live on the
+headless remote and never reach your local machine.
 
-`pastels` recovers every image you pasted and paints it back in the terminal,
+`pastels` recovers every image you pasted and paints it back in your terminal,
 labelled with the exact `[Image #N]` it has in the conversation.
 
 > _(demo gif goes here)_
 
-## install
+## Install
 
 ```sh
 npm i -g pastels
 ```
 
-Requires Node ≥ 18 and a terminal that speaks the [kitty graphics
-protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) for image rendering
-(kitty, ghostty, WezTerm, …). Without one, you still get the text gallery and
-file paths.
+Requires Node 18 or newer. Image rendering needs a terminal that speaks the
+[kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
+such as kitty, ghostty, or WezTerm. Without one you still get the text gallery
+and file paths.
 
-## usage
+## Usage
 
 ```sh
-pastels            # text gallery: every [Image #N] in the current session
-pastels show 4     # full-screen render of [Image #4] — works inside tmux too
-pastels path 4     # print its file path (re-feed to the agent, or save it)
+pastels            # text gallery of images in the current session
+pastels show 4     # full-screen render of [Image #4], works inside tmux too
+pastels path 4     # print its file path to re-feed to the agent or save it
 ```
 
-Full surface:
+Full command surface:
 
 ```
 pastels                  text gallery of the current session
 pastels -a               every image in this project, grouped by session
-pastels -A               index of image sessions across ALL projects
-pastels show N           full-pane render of [Image #N] (alt-screen, any-key to return)
-pastels N                shorthand for `pastels show N`
-pastels -s               interactive picker (↑/↓ + filter + live preview), then render
+pastels -A               index of image sessions across all projects
+pastels show N           full-pane render of [Image #N]
+pastels N                shorthand for pastels show N
+pastels -s               interactive picker with live preview, then render
 pastels -s N             pick a session, then render [Image #N] from it
-pastels path N [--copy]  print (and optionally clipboard-copy) the file path
+pastels path N [--copy]  print the file path, optionally copy it to the clipboard
 pastels gc [--days 7]    prune images not seen in N days
-pastels clear            panic: delete any stranded terminal graphics
+pastels clear            delete any stranded terminal graphics
 ```
 
-`[Image #N]` labels are **per-session** counters, so the bare gallery shows one
-session at a time; use `-a` to sweep the whole project, `-A` for every project, or
-`-s` for an interactive, filterable session picker.
+`[Image #N]` labels are per-session counters, so the bare gallery shows one
+session at a time. Use `-a` to sweep the whole project, `-A` for every project, or
+`-s` for the interactive picker.
 
-### want more history?
+### Interactive picker
 
-`pastels` can only see sessions Claude Code still keeps. Claude Code deletes old
-transcripts per its `cleanupPeriodDays` setting (default 30). To retain more, raise
-it in your Claude Code settings, e.g. `{ "cleanupPeriodDays": 365 }`.
+`pastels -s` opens a session picker, then an image picker for the session you
+choose. Both support arrow keys and vim motions.
 
-## how it works
+```
+j / k or down / up   move
+g / G                jump to first / last
+enter or l           open
+/ or f               filter sessions (session picker)
+c                    copy the image path to your clipboard (image picker)
+p                    print the image path (image picker)
+q / h or esc         back or quit
+```
 
-`pastels` reads Claude Code's own session transcripts
-(`~/.claude/projects/**/*.jsonl`), where pasted images are stored inline as
-base64. The `[Image #N]` label comes straight from the message's `imagePasteIds`
-— so the number you see matches the number in your conversation exactly, even
-when the counter skips deleted pastes. Recovered images are kept in a
-content-addressed store under `~/.pastels/`.
+Inside the image viewer, left and right (or h and l) step to the previous and
+next image, and q returns.
 
-Inside tmux, kitty graphics can't be placed inline without desyncing the grid, so
-`pastels` shows a text gallery and reserves image rendering for the full-pane
-`show N` takeover (which restores your scrollback on exit). `show N` always
-deletes its graphic on exit — including on Ctrl-C — so nothing is ever left
-overlaying your session. If one ever is, `pastels clear` nukes it.
+### Viewing on the right machine
 
-## over SSH + tmux (the main use case)
+`pastels show N` paints the image on your local terminal even though it runs on
+the remote box. The kitty escape sequences travel back over the SSH connection,
+and `pastels` wraps them in tmux passthrough and enables passthrough for you.
+Inside tmux the terminal identity is hidden, so `pastels` actively probes for
+graphics support instead of guessing from environment variables.
 
-`pastels show N` paints the image on your **local** terminal even though it runs
-on the remote box — the kitty escape sequences travel back over the SSH PTY, and
-`pastels` wraps them in tmux's passthrough envelope and enables passthrough for
-you. Inside tmux, `TERM` becomes `tmux-256color` and your terminal's identity
-isn't forwarded, so `pastels` actively probes the terminal to confirm graphics
-support rather than guessing from environment variables.
-
-If `show N` prints a path instead of rendering, the probe couldn't confirm
-support (flaky/slow SSH, an unusual terminal). Force it:
+If a render falls back to printing a path, override detection with environment
+variables:
 
 ```sh
-PASTELS_FORCE_GRAPHICS=1 pastels show N     # you know your terminal speaks kitty graphics
-PASTELS_PLAIN_CLEAR=1 pastels show N        # if alt-screen misbehaves under tmux
-PASTELS_NO_GRAPHICS=1 pastels show N        # force the text+path fallback
+PASTELS_FORCE_GRAPHICS=1 pastels show N   # your terminal supports kitty graphics
+PASTELS_PLAIN_CLEAR=1 pastels show N      # if alt-screen misbehaves under tmux
+PASTELS_NO_GRAPHICS=1 pastels show N      # force the text and path fallback
 ```
 
-## can it be automatic, like cmd+click?
+Copying a path with `c` or `--copy` uses OSC 52, which writes to your local
+clipboard over SSH. Some terminals block clipboard writes by default, so you may
+need to allow it in your terminal settings.
 
-Short version: not fully — Claude Code owns the `[Image #N]` rendering and a hook
-can't paint to your screen. But you can get *semi*-automatic recall (a hook that
-shows new pastes in a side tmux pane, or logs their paths). See
-[docs/automation.md](docs/automation.md). It's deliberately out of v0.
+### Keeping more history
 
-## works great with [cc-clip](https://github.com/) <!-- link -->
+`pastels` can only see sessions that Claude Code still keeps. Claude Code deletes
+old transcripts according to its `cleanupPeriodDays` setting, which defaults to 30
+days. To retain more, raise it in your Claude Code settings, for example
+`{ "cleanupPeriodDays": 365 }`.
 
-cc-clip owns clipboard transport over SSH; pastels owns recall. cc-clip gets the
-image *in*; pastels lets you *see it again*. They compose — use both.
+## How it works
 
-## license
+`pastels` reads Claude Code's own session transcripts under
+`~/.claude/projects/**/*.jsonl`, where pasted images are stored inline as base64.
+The `[Image #N]` label comes straight from each message's `imagePasteIds` array,
+so the number you see matches the number in your conversation exactly, even when
+the counter skips deleted pastes. Recovered images live in a content-addressed
+store under `~/.pastels/`.
 
-MIT
+Inside tmux, kitty graphics cannot be placed inline without desyncing the grid, so
+`pastels` shows a text gallery and reserves image rendering for the full-pane
+`show N` takeover, which restores your scrollback when you exit. Every render
+deletes its graphic on exit, including on Ctrl-C and SIGTERM, so nothing is left
+overlaying your session. If something ever is, `pastels clear` removes it.
+
+## Can it be automatic?
+
+Not fully. Claude Code owns how `[Image #N]` is drawn, and an external tool cannot
+attach behaviour to it or paint into the live composer. You can get semi-automatic
+recall with a hook that shows new pastes in a side tmux pane or logs their paths.
+See [docs/automation.md](docs/automation.md). This is intentionally out of v0.
+
+## Pairs with cc-clip
+
+cc-clip handles clipboard transport over SSH and `pastels` handles recall. cc-clip
+gets the image in, and `pastels` lets you see it again. They compose well, so use
+both.
+
+## License
+
+Released under the [MIT License](LICENSE).
