@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { ClaudeCodeTranscriptAdapter, slugForCwd } from "./adapters/claude-code";
+import { ClaudeCodeTranscriptAdapter, projectsDir, slugForCwd } from "./adapters/claude-code";
 import type { CaptureAdapter, Session, SessionInfo } from "./adapters/types";
 import { isRenderable } from "./core/png";
 import { gc, ingest, type StoredImage } from "./core/store";
@@ -9,6 +9,7 @@ import { printGallery } from "./render/gallery";
 import { deleteAllSeq, wrap } from "./render/kitty";
 import { show } from "./render/show";
 import { interactiveImagePick, interactivePick } from "./render/tui";
+import { watch } from "./render/watch";
 import { copyToClipboard } from "./util/clipboard";
 import { humanAge, humanDims, humanSize, padVisible, style, truncate } from "./util/format";
 
@@ -22,6 +23,7 @@ usage:
   pastels -s             interactive picker (arrow keys + filter), then render
   pastels -s N           pick a session, then render [Image #N] from it
   pastels path N [--copy] print (and optionally clipboard-copy) the file path
+  pastels watch          auto-render each newly pasted image (run in a spare pane)
   pastels gc [--days 7]  prune images not seen in N days
   pastels clear          panic: delete any stranded terminal graphics
 
@@ -430,6 +432,16 @@ function cmdGc(args: string[]): void {
   );
 }
 
+/** `pastels watch` — resident auto-preview of the current project's latest paste.
+ * Strictly project-scoped (cwd slug); run it in a dedicated pane/window. */
+async function cmdWatch(): Promise<void> {
+  const a = adapter();
+  const slug = slugForCwd(process.cwd());
+  const projectDir = path.join(projectsDir(), slug);
+  const caps = await detectCaps({ probe: true });
+  await watch(a, slug, projectDir, caps);
+}
+
 async function cmdClear(): Promise<void> {
   const caps = await detectCaps();
   // panic delete-all, tmux-wrapped if needed, then restore the cursor.
@@ -481,6 +493,9 @@ async function main(): Promise<void> {
       break;
     case "path":
       await cmdPath(argv[1], session, { copy: argv.includes("--copy"), json });
+      break;
+    case "watch":
+      await cmdWatch();
       break;
     case "gc":
       cmdGc(argv.slice(1));
