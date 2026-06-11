@@ -1,5 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ClaudeCodeTranscriptAdapter, slugForCwd } from "./claude-code";
 import type { Session } from "./types";
 
@@ -64,6 +66,55 @@ describe("summarize", () => {
     const info = adapter.summarize({ id: "x", path: "/no/such.jsonl", project: "p", mtime: 0 });
     expect(info.imageCount).toBe(0);
     expect(info.title).toBe("(unreadable)");
+  });
+});
+
+describe("liveImages — paste-time image cache", () => {
+  const adapter = new ClaudeCodeTranscriptAdapter();
+  let tmp: string | undefined;
+
+  afterEach(() => {
+    delete process.env.CLAUDE_IMAGE_CACHE_DIR;
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+    tmp = undefined;
+  });
+
+  function sess(id: string): Session {
+    return { id, path: "/x", project: "p", mtime: 0 };
+  }
+
+  it("reads <session>/N.png with the filename N as the [Image #N] label", () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pastels-cache-"));
+    process.env.CLAUDE_IMAGE_CACHE_DIR = tmp;
+    fs.mkdirSync(path.join(tmp, "s1"));
+    // written out of numeric order to prove we sort by paste id, not name/mtime
+    fs.writeFileSync(path.join(tmp, "s1", "2.png"), Buffer.from("bb"));
+    fs.writeFileSync(path.join(tmp, "s1", "1.png"), Buffer.from("a"));
+
+    const imgs = adapter.liveImages!(sess("s1"));
+    expect(imgs.map((i) => i.label)).toEqual([1, 2]);
+    expect(imgs.map((i) => i.appearance)).toEqual([1, 2]);
+    expect(imgs.map((i) => i.uncertain)).toEqual([false, false]);
+    expect(imgs[0]!.bytes.length).toBe(1);
+    expect(imgs[1]!.bytes.length).toBe(2);
+    expect(imgs[0]!.mediaType).toBe("image/png");
+  });
+
+  it("skips empty (half-written) files and ignores non-png entries", () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pastels-cache-"));
+    process.env.CLAUDE_IMAGE_CACHE_DIR = tmp;
+    fs.mkdirSync(path.join(tmp, "s1"));
+    fs.writeFileSync(path.join(tmp, "s1", "1.png"), Buffer.from("a"));
+    fs.writeFileSync(path.join(tmp, "s1", "2.png"), Buffer.alloc(0)); // mid-write
+    fs.writeFileSync(path.join(tmp, "s1", "notes.txt"), Buffer.from("x"));
+
+    expect(adapter.liveImages!(sess("s1")).map((i) => i.label)).toEqual([1]);
+  });
+
+  it("returns [] when the session has no cache dir", () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pastels-cache-"));
+    process.env.CLAUDE_IMAGE_CACHE_DIR = tmp;
+    expect(adapter.liveImages!(sess("absent"))).toEqual([]);
   });
 });
 

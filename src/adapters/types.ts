@@ -54,4 +54,11 @@ export interface CaptureAdapter {
   extractImages(session: Session): CapturedImage[];
   /** cheap (no base64 decode) metadata for a session */
   summarize(session: Session): SessionInfo;
+  /**
+   * Optional: paste-time images for a session, available BEFORE the prompt is
+   * submitted (for live/watch use). Returns [] when the harness exposes no such
+   * pre-submit cache. The transcript (extractImages) remains the authoritative
+   * post-submit source; this is a latency optimisation, not a replacement.
+   */
+  liveImages?(session: Session): CapturedImage[];
 }

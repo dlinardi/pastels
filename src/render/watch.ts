@@ -7,10 +7,12 @@ import { humanDims, humanSize, style } from "../util/format";
 import { type Caps, enableTmuxPassthrough } from "./capability";
 import { buildImageSequences, deleteByIdSeq, imageIdFromHash, wrap } from "./kitty";
 
-// `pastels watch` — resident auto-preview (PRD phase 4, the achievable version of
-// "see the image as I'm composing"). Run it in a dedicated pane/window. It tails
-// the current project's active transcript and, whenever a new image is pasted
-// (i.e. a new user record lands), repaints that image in its OWN surface.
+// `pastels watch` — resident auto-preview (PRD phase 4, the real version of "see
+// the image as I'm composing"). Run it in a dedicated pane/window. It tails the
+// current project's active session and repaints each newly pasted image in its
+// OWN surface — on PASTE, before you submit, via Claude Code's image-cache
+// (adapter.liveImages); it falls back to the submitted transcript when no cache
+// exists. Either way the image appears the moment it is available.
 //
 // WHY ITS OWN SURFACE: positioned inline graphics desync under tmux (the
 // load-bearing phase-0 finding). watch never paints over Claude Code; it owns
@@ -31,15 +33,11 @@ const SHOW_CURSOR = "\x1b[?25h";
 
 // fs.watch is the instant trigger; the poll is the correctness floor (watchers
 // drop/coalesce events and vary by platform, and we already hit flaky timing
-// over SSH). Debounce coalesces the burst of events a multi-MB base64 write
-// produces, and lets the final JSON line finish flushing before we parse.
-const DEFAULT_POLL_MS = 2000;
-const DEBOUNCE_MS = 200;
-
-/** Load + persist a session's images (extract → content-addressed store). */
-function loadImages(a: CaptureAdapter, s: Session): StoredImage[] {
-  return ingest(a.extractImages(s), `${a.name}:${s.id}`);
-}
+// over SSH). The poll is brisk because paste-to-pixels should feel immediate.
+// Debounce coalesces the event burst a paste write produces and lets a
+// half-written PNG finish flushing before we read it.
+const DEFAULT_POLL_MS = 700;
+const DEBOUNCE_MS = 150;
 
 /**
  * The most recently pasted image to surface, by document-appearance order. In
@@ -75,13 +73,14 @@ export interface WatchOptions {
 /**
  * Watch the current project for newly pasted images and auto-render the latest.
  * Resolves when the user quits (q / Ctrl-C); signal exits go through the same
- * teardown. `projectDir` is the directory whose transcripts we tail (may not yet
- * exist — the poll picks it up when it appears).
+ * teardown. `watchDirs` are the directories we fs.watch for instant triggers
+ * (e.g. the image-cache and the project transcript dir); any that don't exist
+ * yet are simply skipped — the poll picks them up when they appear.
  */
 export async function watch(
   a: CaptureAdapter,
   slug: string,
-  projectDir: string,
+  watchDirs: string[],
   caps: Caps,
   opts: WatchOptions = {},
   out: NodeJS.WriteStream = process.stdout
@@ -139,7 +138,8 @@ export async function watch(
   };
 
   // Single scan: re-pick the active session, surface its latest image if it's
-  // new since the last paint. Never throws out to the loop.
+  // new since the last paint. Prefer paste-time images (liveImages) so we render
+  // before submit; fall back to the submitted transcript. Never throws to the loop.
   const scan = (): void => {
     let session: Session | null;
     try {
@@ -151,12 +151,17 @@ export async function watch(
 
     let images: StoredImage[];
     try {
-      images = loadImages(a, session);
+      const live = a.liveImages ? a.liveImages(session) : [];
+      const captured = live.length ? live : a.extractImages(session);
+      images = ingest(captured, `${a.name}:${session.id}`);
     } catch {
       return;
     }
     const img = pickLatest(images, graphics);
     if (!img || img.hash === lastHash) return;
+    // a freshly-pasted PNG can be caught mid-write (no IHDR yet → null dims);
+    // skip this tick and let the next trigger repaint the complete file.
+    if (graphics && img.width == null) return;
     lastHash = img.hash;
     current = img;
 
@@ -182,11 +187,17 @@ export async function watch(
       }, DEBOUNCE_MS);
     };
 
-    let watcher: fs.FSWatcher | undefined;
-    try {
-      watcher = fs.watch(projectDir, { persistent: true }, () => trigger());
-    } catch {
-      // dir missing (fresh project) or platform lacks fs.watch — poll covers it
+    // macOS fs.watch supports recursive (catches writes into the per-session
+    // subdir); Linux does not (passing recursive:true would throw), so there the
+    // top-level event + the poll cover nested paste writes.
+    const recursive = process.platform === "darwin";
+    const watchers: fs.FSWatcher[] = [];
+    for (const dir of watchDirs) {
+      try {
+        watchers.push(fs.watch(dir, { persistent: true, recursive }, () => trigger()));
+      } catch {
+        // dir missing yet or fs.watch unsupported here — poll covers it
+      }
     }
     const pollTimer = setInterval(trigger, pollMs);
 
@@ -201,9 +212,9 @@ export async function watch(
       torn = true;
       if (debounceTimer) clearTimeout(debounceTimer);
       clearInterval(pollTimer);
-      if (watcher) {
+      for (const w of watchers) {
         try {
-          watcher.close();
+          w.close();
         } catch {
           // ignore
         }

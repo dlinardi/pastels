@@ -26,6 +26,20 @@ export function projectsDir(): string {
   );
 }
 
+// Claude Code caches pasted images to disk the moment you paste, BEFORE you
+// submit, under ~/.claude/image-cache/<session-id>/<N>.png. Verified (2026-06-10)
+// against a live session: the subdir name equals the session id (so it resolves
+// to a project, keeping watch scoped), and the filename N equals the paste id —
+// i.e. the [Image #N] label (matched `imagePasteIds` exactly). This is an
+// undocumented internal, so liveImages() degrades to [] on any unexpected shape
+// and the transcript stays authoritative.
+export function imageCacheDir(): string {
+  return (
+    process.env.CLAUDE_IMAGE_CACHE_DIR ??
+    path.join(os.homedir(), ".claude", "image-cache")
+  );
+}
+
 /** Claude Code's project-slug rule: cwd with non-alphanumerics collapsed to '-'. */
 export function slugForCwd(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -212,6 +226,59 @@ export class ClaudeCodeTranscriptAdapter implements CaptureAdapter {
     }
 
     return images;
+  }
+
+  // Paste-time images from ~/.claude/image-cache/<session-id>/N.png. Filename N
+  // is the authoritative paste id (= [Image #N]); a non-numeric name degrades to
+  // appearance order with uncertain:true. Reads bytes off disk so watch can
+  // render the instant you paste, before the transcript is written on submit.
+  liveImages(session: Session): CapturedImage[] {
+    const dir = path.join(imageCacheDir(), session.id);
+    let files: string[];
+    try {
+      files = fs.readdirSync(dir);
+    } catch {
+      return []; // no cache dir for this session yet (or none pasted)
+    }
+
+    const pngs = files
+      .map((f) => ({ f, m: /^(\d+)\.png$/i.exec(f) }))
+      .filter((x) => /\.png$/i.test(x.f))
+      .sort((a, b) => {
+        const an = a.m ? Number(a.m[1]) : Number.POSITIVE_INFINITY;
+        const bn = b.m ? Number(b.m[1]) : Number.POSITIVE_INFINITY;
+        return an - bn || (a.f < b.f ? -1 : a.f > b.f ? 1 : 0);
+      });
+
+    const out: CapturedImage[] = [];
+    let appearance = 0;
+    for (const { f, m } of pngs) {
+      const fp = path.join(dir, f);
+      let bytes: Buffer;
+      try {
+        bytes = fs.readFileSync(fp);
+      } catch {
+        continue;
+      }
+      if (bytes.length === 0) continue; // half-written paste — skip, retried next tick
+      appearance++;
+      let ts: string | undefined;
+      try {
+        ts = fs.statSync(fp).mtime.toISOString();
+      } catch {
+        // best effort
+      }
+      out.push({
+        label: m ? Number(m[1]) : appearance,
+        appearance,
+        uncertain: !m,
+        bytes,
+        mediaType: "image/png",
+        ts,
+        sessionId: session.id,
+      });
+    }
+    return out;
   }
 
   summarize(session: Session): SessionInfo {

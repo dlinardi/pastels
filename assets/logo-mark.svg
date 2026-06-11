@@ -1,0 +1,24 @@
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>pastels</title>
+  <defs>
+    <linearGradient id="pastel" x1="72" y1="72" x2="168" y2="168" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#cc6666"/>
+      <stop offset="0.5" stop-color="#b294bb"/>
+      <stop offset="1" stop-color="#8abeb7"/>
+    </linearGradient>
+    <clipPath id="sq">
+      <rect x="72" y="72" width="96" height="96" rx="22"/>
+    </clipPath>
+  </defs>
+
+  <!-- the image, a pastel swatch with a soft sun and ridge so it reads as a picture -->
+  <g clip-path="url(#sq)">
+    <rect x="72" y="72" width="96" height="96" fill="url(#pastel)"/>
+    <circle cx="99" cy="99" r="11" fill="#ffffff" opacity="0.85"/>
+    <path d="M72 168 L104 126 L128 150 L150 132 L168 154 L168 168 Z" fill="#ffffff" opacity="0.22"/>
+  </g>
+
+  <!-- the [Image #N] brackets pastels exists to reveal -->
+  <path d="M62 54 H44 V186 H62" stroke="#c5c8c6" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M178 54 H196 V186 H178" stroke="#c5c8c6" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

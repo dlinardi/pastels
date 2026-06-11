@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { ClaudeCodeTranscriptAdapter, projectsDir, slugForCwd } from "./adapters/claude-code";
+import {
+  ClaudeCodeTranscriptAdapter,
+  imageCacheDir,
+  projectsDir,
+  slugForCwd,
+} from "./adapters/claude-code";
 import type { CaptureAdapter, Session, SessionInfo } from "./adapters/types";
 import { isRenderable } from "./core/png";
 import { gc, ingest, type StoredImage } from "./core/store";
@@ -439,7 +444,9 @@ async function cmdWatch(): Promise<void> {
   const slug = slugForCwd(process.cwd());
   const projectDir = path.join(projectsDir(), slug);
   const caps = await detectCaps({ probe: true });
-  await watch(a, slug, projectDir, caps);
+  // watch the paste-time image-cache (renders before submit) and the transcript
+  // dir (post-submit fallback); both are fs.watched for instant triggers.
+  await watch(a, slug, [imageCacheDir(), projectDir], caps);
 }
 
 async function cmdClear(): Promise<void> {
