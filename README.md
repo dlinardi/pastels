@@ -39,7 +39,7 @@ pastels -a               every image in this project, grouped by session
 pastels -A               index of image sessions across ALL projects
 pastels show N           full-pane render of [Image #N] (alt-screen, any-key to return)
 pastels N                shorthand for `pastels show N`
-pastels -s               interactive picker (↑/↓ + type-to-filter), then render
+pastels -s               interactive picker (↑/↓ + filter + live preview), then render
 pastels -s N             pick a session, then render [Image #N] from it
 pastels path N [--copy]  print (and optionally clipboard-copy) the file path
 pastels gc [--days 7]    prune images not seen in N days
