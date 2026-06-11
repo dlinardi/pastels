@@ -28,7 +28,7 @@
     "ssh",
     "tmux"
   ],
-  "author": "dave <dlinardi98@gmail.com>",
+  "author": "dlinardi <dlinardi98@gmail.com>",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/dlinardi/pastels/issues"
