@@ -15,6 +15,7 @@ import { deleteAllSeq, wrap } from "./render/kitty";
 import { show } from "./render/show";
 import { interactiveImagePick, interactivePick } from "./render/tui";
 import { watch } from "./render/watch";
+import { serve } from "./web/server";
 import { copyToClipboard } from "./util/clipboard";
 import { humanAge, humanDims, humanSize, padVisible, style, truncate } from "./util/format";
 
@@ -29,6 +30,7 @@ usage:
   pastels -s N           pick a session, then render [Image #N] from it
   pastels path N [--copy] print (and optionally clipboard-copy) the file path
   pastels watch          auto-render each newly pasted image (run in a spare pane)
+  pastels serve [--port] live web gallery of this project's images (great over SSH)
   pastels gc [--days 7]  prune images not seen in N days
   pastels clear          panic: delete any stranded terminal graphics
 
@@ -449,6 +451,22 @@ async function cmdWatch(): Promise<void> {
   await watch(a, slug, [imageCacheDir(), projectDir], caps);
 }
 
+/** `pastels serve` — live web gallery for the current project. */
+async function cmdServe(args: string[]): Promise<void> {
+  let port: number | undefined;
+  const i = args.indexOf("--port");
+  if (i !== -1 && args[i + 1] !== undefined) {
+    const p = Number(args[i + 1]);
+    if (Number.isInteger(p) && p > 0 && p < 65536) port = p;
+    else {
+      console.error("invalid --port (expected 1-65535).");
+      process.exitCode = 1;
+      return;
+    }
+  }
+  await serve({ port });
+}
+
 async function cmdClear(): Promise<void> {
   const caps = await detectCaps();
   // panic delete-all, tmux-wrapped if needed, then restore the cursor.
@@ -503,6 +521,9 @@ async function main(): Promise<void> {
       break;
     case "watch":
       await cmdWatch();
+      break;
+    case "serve":
+      await cmdServe(argv.slice(1));
       break;
     case "gc":
       cmdGc(argv.slice(1));
